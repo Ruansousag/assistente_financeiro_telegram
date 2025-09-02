@@ -1,0 +1,7 @@
+python-telegram-bot
+Flask
+matplotlib
+seaborn
+pandas
+pytz
+python-dateutil
