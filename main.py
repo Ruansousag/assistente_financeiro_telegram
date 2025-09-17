@@ -228,10 +228,11 @@ class FinancialBotDB:
                                       ('Investimentos', 'receita', '📈'),
                                       ('Mercado', 'despesa', '🛒'),
                                       ('Saúde', 'despesa', '🏥'),
-                                      ('Casa', 'despesa', '🏠'),
+                                      ('Apto', 'despesa', '🏠'),
                                       ('Aluguel', 'despesa', '🏘️'),
                                       ('Lazer', 'despesa', '🎉'),
-                                      ('Cartão', 'despesa', '💳'),
+                                      ('Cartão NUBANK', 'despesa', '💳'),
+                                      ('Cartão BRB', 'despesa', '💳'),
                                       ('Transporte', 'despesa', '🚗'),
                                       ('Educação', 'despesa', '📚'),
                                       ('Diversos', 'ambos', '📦')]
@@ -1245,3 +1246,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
