@@ -80,12 +80,12 @@ def home():
                 padding: 30px;
                 border-radius: 15px;
                 backdrop-filter: blur(10px);
-                box-shadow: 0 8px 32px rgba(0,0,0,0.1);
+                box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
             }
             .status {
                 text-align: center;
                 padding: 20px;
-                background: rgba(0,255,0,0.2);
+                background: rgba(0, 255, 0, 0.2);
                 border-radius: 10px;
                 margin: 20px 0;
             }
@@ -917,14 +917,23 @@ async def data_button_handler(update: Update,
 
         data_obj = datetime.strptime(date_str, '%Y-%m-%d')
         mes_nome = meses[calendar.month_name[data_obj.month]].capitalize()
+        
+        # AQUI: Apagando a mensagem com os botões de data antes de enviar a próxima.
+        message_id_to_edit = query.message.message_id
+        if message_id_to_edit:
+            try:
+                await context.bot.delete_message(chat_id=query.message.chat_id,
+                                                 message_id=message_id_to_edit)
+            except Exception:
+                pass
 
-        await query.edit_message_text(
+        sent_message = await context.bot.send_message(
             chat_id=query.message.chat_id,
-            message_id=query.message.message_id,
             text=
             f"Data de Inserção: *{format_date_br(context.user_data['data_insercao'])}* (Contabilizado para {mes_nome})\n\n"
             "Agora, uma breve descrição:",
             parse_mode='Markdown')
+        context.user_data['message_id_to_edit'] = sent_message.message_id
 
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -957,7 +966,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data['valor_transacao'] = valor
             context.user_data['step'] = 'data_transacao'
 
-            # AQUI: Apagando a mensagem que pergunta o valor antes de enviar a próxima.
             if message_id_to_edit:
                 try:
                     await context.bot.delete_message(chat_id=chat_id,
