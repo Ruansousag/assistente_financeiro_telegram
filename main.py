@@ -228,11 +228,10 @@ class FinancialBotDB:
                                       ('Investimentos', 'receita', '📈'),
                                       ('Mercado', 'despesa', '🛒'),
                                       ('Saúde', 'despesa', '🏥'),
-                                      ('Apto', 'despesa', '🏠'),
+                                      ('Casa', 'despesa', '🏠'),
                                       ('Aluguel', 'despesa', '🏘️'),
                                       ('Lazer', 'despesa', '🎉'),
-                                      ('Cartão NUBANK', 'despesa', '💳'),
-                                      ('Cartão BRB', 'despesa', '💳'),
+                                      ('Cartão', 'despesa', '💳'),
                                       ('Transporte', 'despesa', '🚗'),
                                       ('Educação', 'despesa', '📚'),
                                       ('Diversos', 'ambos', '📦')]
@@ -258,8 +257,6 @@ class FinancialBotDB:
     def add_transacao(self, user_id, tipo, categoria, valor, descricao, data):
         with self._get_connection() as conn:
             cursor = conn.cursor()
-            # Removida a verificação de duplicidade para simplificar o fluxo.
-            # O user_id agora é apenas para rastrear quem fez o lançamento.
             cursor.execute(
                 "INSERT INTO transacoes (user_id, tipo, categoria, valor, descricao, data) VALUES (?, ?, ?, ?, ?, ?)",
                 (user_id, tipo, categoria, float(valor), descricao, data))
@@ -276,7 +273,6 @@ class FinancialBotDB:
             if not orcamento:
                 return None, 0, 0, 0
             limite = orcamento[0]
-            # Gasto de todos os usuários
             cursor.execute(
                 "SELECT COALESCE(SUM(valor), 0) FROM transacoes WHERE categoria = ? AND tipo = 'despesa' AND strftime('%Y-%m', data) = ?",
                 (categoria, f"{ano:04d}-{mes:02d}"))
@@ -305,7 +301,6 @@ class FinancialBotDB:
     def get_transacoes_por_categoria(self, categoria, mes, ano):
         with self._get_connection() as conn:
             cursor = conn.cursor()
-            # Transações de todos os usuários
             cursor.execute(
                 "SELECT data, descricao, valor FROM transacoes WHERE categoria = ? AND tipo = 'despesa' AND strftime('%Y-%m', data) = ? ORDER BY data",
                 (categoria, f"{ano:04d}-{mes:02d}"))
@@ -314,14 +309,12 @@ class FinancialBotDB:
     def gerar_relatorio_mensal(self, mes, ano, detalhado=False):
         with self._get_connection() as conn:
             periodo_str = f"{ano:04d}-{mes:02d}"
-            # Relatório de todos os usuários
             query = "SELECT data, categoria, descricao, tipo, valor, user_id FROM transacoes WHERE strftime('%Y-%m', data) = ? ORDER BY data" if detalhado else "SELECT categoria, tipo, SUM(valor) as total FROM transacoes WHERE strftime('%Y-%m', data) = ? GROUP BY categoria, tipo"
             return pd.read_sql_query(query, conn, params=[periodo_str])
 
     def get_ultimos_lancamentos(self, limit=7):
         with self._get_connection() as conn:
             cursor = conn.cursor()
-            # Lançamentos de todos os usuários
             cursor.execute(
                 "SELECT id, data, tipo, categoria, descricao, valor, user_id FROM transacoes ORDER BY id DESC LIMIT ?",
                 (limit, ))
@@ -623,7 +616,6 @@ async def generic_button_handler(update: Update,
             parse_mode='Markdown')
 
     elif data.startswith("cat_"):
-        # AQUI FOI ALTERADO: guardando o message_id para edição no passo seguinte.
         context.user_data['message_id_to_edit'] = query.message.message_id
         categoria = data[4:]
         context.user_data['categoria_transacao'] = categoria
@@ -927,6 +919,8 @@ async def data_button_handler(update: Update,
         mes_nome = meses[calendar.month_name[data_obj.month]].capitalize()
 
         await query.edit_message_text(
+            chat_id=query.message.chat_id,
+            message_id=query.message.message_id,
             text=
             f"Data de Inserção: *{format_date_br(context.user_data['data_insercao'])}* (Contabilizado para {mes_nome})\n\n"
             "Agora, uma breve descrição:",
@@ -962,6 +956,14 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             valor = float(text.replace('.', '').replace(',', '.'))
             context.user_data['valor_transacao'] = valor
             context.user_data['step'] = 'data_transacao'
+
+            # AQUI: Apagando a mensagem que pergunta o valor antes de enviar a próxima.
+            if message_id_to_edit:
+                try:
+                    await context.bot.delete_message(chat_id=chat_id,
+                                                     message_id=message_id_to_edit)
+                except Exception:
+                    pass
 
             hoje = get_brazil_now()
             proximo_mes = hoje + relativedelta(months=1)
@@ -1235,4 +1237,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
