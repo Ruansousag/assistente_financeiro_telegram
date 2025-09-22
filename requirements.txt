@@ -4,4 +4,6 @@ matplotlib
 seaborn
 pandas
 pytz
+
 python-dateutil
+psycopg[binary]
