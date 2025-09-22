@@ -1,4 +1,3 @@
-import sqlite3
 import logging
 from datetime import datetime
 from dateutil.relativedelta import relativedelta
@@ -1025,7 +1024,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception:
                 pass
 
-        add_transacao(str(user_id), context.user_data['tipo_transacao'],
+        tx_id = add_transacao(str(user_id), context.user_data['tipo_transacao'],
                          context.user_data['categoria_transacao'],
                          context.user_data['valor_transacao'],
                          descricao,
@@ -1217,7 +1216,7 @@ def main():
     # Inicia o servidor web em uma thread separada
     web_thread = threading.Thread(target=run_web_server, daemon=True)
     web_thread.start()
-    
+
     # Inicia o banco de dados
     setup_database()
 
@@ -1227,4 +1226,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
