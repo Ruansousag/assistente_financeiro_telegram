@@ -17,7 +17,192 @@ import pytz
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackQueryHandler, ContextTypes
 
-# --- CONFIGURAÇÃO INICIAL ---
+import os
+import psycopg
+
+# CONEXÃO COM O BANCO DE DADOS
+# A conexão agora é feita usando as variáveis de ambiente do Railway
+conn = psycopg.connect(
+    host=os.getenv("PGHOST"),
+    user=os.getenv("PGUSER"),
+    password=os.getenv("PGPASSWORD"),
+    dbname=os.getenv("PGDATABASE")
+)
+
+# Função para criar uma tabela (agora no PostgreSQL)
+def setup_database():
+    with conn.cursor() as cur:
+        # A tabela "users" foi adicionada para guardar os usuários que usam o bot
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id SERIAL PRIMARY KEY,
+                telegram_id VARCHAR(255) UNIQUE NOT NULL,
+                first_name VARCHAR(255)
+            );
+        """)
+        # A tabela "transacoes" foi alterada para se adequar ao PostgreSQL
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS transacoes (
+                id SERIAL PRIMARY KEY,
+                user_id VARCHAR(255) REFERENCES users(telegram_id),
+                tipo TEXT,
+                categoria TEXT,
+                valor DECIMAL(10, 2),
+                descricao TEXT,
+                data DATE,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+        # A tabela "orcamentos" foi alterada para se adequar ao PostgreSQL
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS orcamentos (
+                id SERIAL PRIMARY KEY,
+                categoria TEXT NOT NULL,
+                valor_limite DECIMAL(10, 2) NOT NULL,
+                mes INTEGER NOT NULL,
+                ano INTEGER NOT NULL,
+                UNIQUE(categoria, mes, ano)
+            );
+        """)
+        # A tabela "categorias" foi alterada para se adequar ao PostgreSQL
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS categorias (
+                id SERIAL PRIMARY KEY,
+                nome TEXT UNIQUE,
+                tipo TEXT,
+                icone TEXT
+            );
+        """)
+        # Garante que as categorias padrão são criadas apenas uma vez
+        cur.execute("SELECT COUNT(*) FROM categorias")
+        if cur.fetchone()[0] == 0:
+            categorias_default = [('Salário', 'receita', '💰'),
+                                  ('Freelance', 'receita', '💻'),
+                                  ('Investimentos', 'receita', '📈'),
+                                  ('Mercado', 'despesa', '🛒'),
+                                  ('Saúde', 'despesa', '🏥'),
+                                  ('Apto', 'despesa', '🏠'),
+                                  ('Aluguel', 'despesa', '🏘️'),
+                                  ('Lazer', 'despesa', '🎉'),
+                                  ('Cartão NUBANK', 'despesa', '💳'),
+                                  ('Cartão BRB', 'despesa', '💳'),
+                                  ('Cartão CAIXA', 'despesa', '💳'),
+                                  ('Cartão CVC', 'despesa', '💳'),
+                                  ('Transporte', 'despesa', '🚗'),
+                                  ('Educação', 'despesa', '📚'),
+                                  ('Diversos', 'ambos', '📦')]
+            cur.executemany(
+                'INSERT INTO categorias (nome, tipo, icone) VALUES (%s, %s, %s)',
+                categorias_default)
+    conn.commit()
+
+
+def zerar_dados():
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM transacoes")
+        cur.execute("DELETE FROM orcamentos")
+    conn.commit()
+
+
+def get_categorias(tipo=None):
+    with conn.cursor() as cur:
+        query = "SELECT nome, icone FROM categorias WHERE tipo = %s OR tipo = 'ambos' ORDER BY nome" if tipo else "SELECT nome, icone FROM categorias ORDER BY nome"
+        cur.execute(query, (tipo, ) if tipo else ())
+        return cur.fetchall()
+
+
+def add_transacao(user_id, tipo, categoria, valor, descricao, data):
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO transacoes (user_id, tipo, categoria, valor, descricao, data) VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
+            (user_id, tipo, categoria, float(valor), descricao, data))
+        tx_id = cur.fetchone()[0]
+    conn.commit()
+    return tx_id
+
+
+def get_orcamento_status(categoria, mes, ano):
+    with conn.cursor() as cur:
+        cur.execute(
+            'SELECT valor_limite FROM orcamentos WHERE categoria = %s AND mes = %s AND ano = %s',
+            (categoria, mes, ano))
+        orcamento = cur.fetchone()
+        if not orcamento:
+            return None, 0, 0, 0
+        limite = orcamento[0]
+        cur.execute(
+            "SELECT COALESCE(SUM(valor), 0) FROM transacoes WHERE categoria = %s AND tipo = 'despesa' AND EXTRACT(YEAR FROM data) = %s AND EXTRACT(MONTH FROM data) = %s",
+            (categoria, ano, mes))
+        gasto_atual = cur.fetchone()[0]
+        disponivel = limite - gasto_atual
+        percentual_usado = (gasto_atual / limite) * 100 if limite > 0 else 0
+        return limite, gasto_atual, disponivel, percentual_usado
+
+
+def set_orcamento(categoria, valor_limite, mes, ano):
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO orcamentos (categoria, valor_limite, mes, ano) VALUES (%s, %s, %s, %s) ON CONFLICT(categoria, mes, ano) DO UPDATE SET valor_limite = excluded.valor_limite",
+            (categoria, float(valor_limite), mes, ano))
+    conn.commit()
+
+
+def get_todos_orcamentos(mes, ano):
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT categoria, valor_limite FROM orcamentos WHERE mes = %s AND ano = %s ORDER BY categoria",
+            (mes, ano))
+        return cur.fetchall()
+
+
+def get_transacoes_por_categoria(categoria, mes, ano):
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT data, descricao, valor FROM transacoes WHERE categoria = %s AND tipo = 'despesa' AND EXTRACT(YEAR FROM data) = %s AND EXTRACT(MONTH FROM data) = %s ORDER BY data",
+            (categoria, ano, mes))
+        return cur.fetchall()
+
+
+def gerar_relatorio_mensal(mes, ano, detalhado=False):
+    with conn.cursor() as cur:
+        if detalhado:
+            query = "SELECT data, categoria, descricao, tipo, valor, user_id FROM transacoes WHERE EXTRACT(YEAR FROM data) = %s AND EXTRACT(MONTH FROM data) = %s ORDER BY data"
+        else:
+            query = "SELECT categoria, tipo, SUM(valor) as total FROM transacoes WHERE EXTRACT(YEAR FROM data) = %s AND EXTRACT(MONTH FROM data) = %s GROUP BY categoria, tipo"
+        df = pd.read_sql_query(query, conn, params=[ano, mes])
+    return df
+
+
+def get_ultimos_lancamentos(limit=7):
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT id, data, tipo, categoria, descricao, valor, user_id FROM transacoes ORDER BY id DESC LIMIT %s",
+            (limit, ))
+        return cur.fetchall()
+
+
+def get_transacao(tx_id):
+    with conn.cursor() as cur:
+        cur.execute("SELECT * FROM transacoes WHERE id = %s", (tx_id, ))
+        return cur.fetchone()
+
+
+def update_transacao_valor(tx_id, novo_valor):
+    with conn.cursor() as cur:
+        try:
+            cur.execute("UPDATE transacoes SET valor = %s WHERE id = %s",
+                        (novo_valor, tx_id))
+            conn.commit()
+            return cur.rowcount > 0
+        except Exception as e:
+            logging.error(f"Erro ao atualizar transação {tx_id}: {e}")
+            return False
+
+
+# --- FUNÇÕES AUXILIARES E DE LÓGICA DO BOT (MANTIDAS) ---
+# ... (o resto do seu código, que não precisa de alteração) ...
+
+# --- FUNÇÕES AUXILIARES ---
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO)
@@ -161,7 +346,7 @@ def format_brl(value):
     try:
         return f"R$ {value:,.2f}".replace(",",
                                            "X").replace(".",
-                                                          ",").replace("X", ".")
+                                                        ",").replace("X", ".")
     except locale.Error:
         return f"R$ {value:.2f}".replace('.', ',')
 
@@ -184,161 +369,6 @@ def calc_percent_change(current, previous):
         return " (Novo)" if current > 0 else ""
     change = ((current - previous) / previous) * 100
     return f" ({'+' if change >= 0 else ''}{change:.1f}%)"
-
-
-# --- CLASSE DE GERENCIAMENTO DO BANCO DE DADOS ---
-class FinancialBotDB:
-
-    def __init__(self, db_name='financeiro.db'):
-        self.db_name = db_name
-        self.init_database()
-
-    def _get_connection(self):
-        return sqlite3.connect(self.db_name)
-
-    def init_database(self):
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS transacoes (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, tipo TEXT,
-                    categoria TEXT, valor REAL, descricao TEXT, data DATE,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS orcamentos (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT, categoria TEXT NOT NULL,
-                    valor_limite REAL NOT NULL, mes INTEGER NOT NULL, ano INTEGER NOT NULL,
-                    UNIQUE(categoria, mes, ano)
-                )
-            ''')
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS categorias (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT, nome TEXT UNIQUE,
-                    tipo TEXT, icone TEXT
-                )
-            ''')
-            cursor.execute("SELECT COUNT(*) FROM categorias")
-            if cursor.fetchone()[0] == 0:
-                categorias_default = [('Salário', 'receita', '💰'),
-                                      ('Freelance', 'receita', '💻'),
-                                      ('Investimentos', 'receita', '📈'),
-                                      ('Mercado', 'despesa', '🛒'),
-                                      ('Saúde', 'despesa', '🏥'),
-                                      ('Apto', 'despesa', '🏠'),
-                                      ('Aluguel', 'despesa', '🏘️'),
-                                      ('Lazer', 'despesa', '🎉'),
-                                      ('Cartão NUBANK', 'despesa', '💳'),
-                                      ('Cartão BRB', 'despesa', '💳'),
-                                      ('Transporte', 'despesa', '🚗'),
-                                      ('Educação', 'despesa', '📚'),
-                                      ('Diversos', 'ambos', '📦')]
-                cursor.executemany(
-                    'INSERT INTO categorias (nome, tipo, icone) VALUES (?, ?, ?)',
-                    categorias_default)
-            conn.commit()
-
-    def zerar_dados(self):
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("DELETE FROM transacoes")
-            cursor.execute("DELETE FROM orcamentos")
-            conn.commit()
-
-    def get_categorias(self, tipo=None):
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            query = "SELECT nome, icone FROM categorias WHERE tipo = ? OR tipo = 'ambos' ORDER BY nome" if tipo else "SELECT nome, icone FROM categorias ORDER BY nome"
-            cursor.execute(query, (tipo, ) if tipo else ())
-            return cursor.fetchall()
-
-    def add_transacao(self, user_id, tipo, categoria, valor, descricao, data):
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "INSERT INTO transacoes (user_id, tipo, categoria, valor, descricao, data) VALUES (?, ?, ?, ?, ?, ?)",
-                (user_id, tipo, categoria, float(valor), descricao, data))
-            conn.commit()
-            return cursor.lastrowid
-
-    def get_orcamento_status(self, categoria, mes, ano):
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                'SELECT valor_limite FROM orcamentos WHERE categoria = ? AND mes = ? AND ano = ?',
-                (categoria, mes, ano))
-            orcamento = cursor.fetchone()
-            if not orcamento:
-                return None, 0, 0, 0
-            limite = orcamento[0]
-            cursor.execute(
-                "SELECT COALESCE(SUM(valor), 0) FROM transacoes WHERE categoria = ? AND tipo = 'despesa' AND strftime('%Y-%m', data) = ?",
-                (categoria, f"{ano:04d}-{mes:02d}"))
-            gasto_atual = cursor.fetchone()[0]
-            disponivel = limite - gasto_atual
-            percentual_usado = (gasto_atual /
-                                limite) * 100 if limite > 0 else 0
-            return limite, gasto_atual, disponivel, percentual_usado
-
-    def set_orcamento(self, categoria, valor_limite, mes, ano):
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "INSERT INTO orcamentos (categoria, valor_limite, mes, ano) VALUES (?, ?, ?, ?) ON CONFLICT(categoria, mes, ano) DO UPDATE SET valor_limite = excluded.valor_limite",
-                (categoria, float(valor_limite), mes, ano))
-            conn.commit()
-
-    def get_todos_orcamentos(self, mes, ano):
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT categoria, valor_limite FROM orcamentos WHERE mes = ? AND ano = ? ORDER BY categoria",
-                (mes, ano))
-            return cursor.fetchall()
-
-    def get_transacoes_por_categoria(self, categoria, mes, ano):
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT data, descricao, valor FROM transacoes WHERE categoria = ? AND tipo = 'despesa' AND strftime('%Y-%m', data) = ? ORDER BY data",
-                (categoria, f"{ano:04d}-{mes:02d}"))
-            return cursor.fetchall()
-
-    def gerar_relatorio_mensal(self, mes, ano, detalhado=False):
-        with self._get_connection() as conn:
-            periodo_str = f"{ano:04d}-{mes:02d}"
-            query = "SELECT data, categoria, descricao, tipo, valor, user_id FROM transacoes WHERE strftime('%Y-%m', data) = ? ORDER BY data" if detalhado else "SELECT categoria, tipo, SUM(valor) as total FROM transacoes WHERE strftime('%Y-%m', data) = ? GROUP BY categoria, tipo"
-            return pd.read_sql_query(query, conn, params=[periodo_str])
-
-    def get_ultimos_lancamentos(self, limit=7):
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT id, data, tipo, categoria, descricao, valor, user_id FROM transacoes ORDER BY id DESC LIMIT ?",
-                (limit, ))
-            return cursor.fetchall()
-
-    def get_transacao(self, tx_id):
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT * FROM transacoes WHERE id = ?", (tx_id, ))
-            return cursor.fetchone()
-
-    def update_transacao_valor(self, tx_id, novo_valor):
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            try:
-                cursor.execute("UPDATE transacoes SET valor = ? WHERE id = ?",
-                               (novo_valor, tx_id))
-                conn.commit()
-                return cursor.rowcount > 0
-            except Exception as e:
-                logging.error(f"Erro ao atualizar transação {tx_id}: {e}")
-                return False
-
-
-db = FinancialBotDB()
 
 
 # --- FUNÇÕES DE LÓGICA E VISUALIZAÇÃO ---
@@ -440,60 +470,6 @@ def criar_relatorio_visual(df, mes, ano):
     plt.savefig(buffer, format='png', dpi=300)
     buffer.seek(0)
     plt.close()
-    return buffer
-
-
-def criar_relatorio_detalhado(df, mes, ano):
-    if df.empty:
-        return None
-    df_sorted = df.sort_values(by='tipo', ascending=False)
-    nome_mes_ano = f"{meses[calendar.month_name[mes]].capitalize()}/{ano}"
-    buffer = StringIO()
-    buffer.write(f"Relatório Detalhado - {nome_mes_ano}\n{'='*50}\n\n")
-    for _, row in df_sorted.iterrows():
-        sinal = '+' if row['tipo'] == 'receita' else '-'
-        buffer.write(
-            f"Data: {format_date_br(row['data'])}\nTipo: {row['tipo'].capitalize()}\nCategoria: {row['categoria']}\n"
-        )
-        buffer.write(
-            f"Descrição: {row['descricao']}\nValor: {sinal}{format_brl(row['valor']).replace('R$ ', '')}\n{'-'*30}\n"
-        )
-    buffer.seek(0)
-    return buffer
-
-
-def criar_relatorio_comparativo(df_atual, df_anterior, mes_atual, ano_atual,
-                                mes_anterior, ano_anterior):
-    rec_atual = df_atual[df_atual['tipo'] == 'receita']['total'].sum()
-    desp_atual = df_atual[df_atual['tipo'] == 'despesa']['total'].sum()
-    rec_anterior = df_anterior[df_anterior['tipo'] == 'receita']['total'].sum()
-    desp_anterior = df_anterior[df_anterior['tipo'] ==
-                                'despesa']['total'].sum()
-    despesas_atual_cat = df_atual[df_atual['tipo'] == 'despesa'].set_index(
-        'categoria')['total']
-    despesas_anterior_cat = df_anterior[
-        df_anterior['tipo'] == 'despesa'].set_index('categoria')['total']
-    df_comp = pd.concat([despesas_atual_cat, despesas_anterior_cat],
-                        axis=1,
-                        keys=['atual', 'anterior']).fillna(0)
-    df_comp['variacao'] = df_comp['atual'] - df_comp['anterior']
-    fig, ax = plt.subplots(figsize=(12, 8))
-    df_comp[['anterior', 'atual'
-             ]].sort_values(by='atual',
-                            ascending=True).plot(kind='barh',
-                                                 ax=ax,
-                                                 color=['#ff9999', '#ff4d4d'])
-    ax.set_title(
-        f"Comparativo de Despesas: {meses[calendar.month_name[mes_anterior]].capitalize()} vs {meses[calendar.month_name[mes_atual]].capitalize()}",
-        fontsize=16)
-    ax.set_xlabel('Valor (R$)')
-    ax.set_ylabel('Categorias')
-    ax.legend(['Mês Anterior', 'Mês Atual'])
-    plt.tight_layout()
-    buffer = BytesIO()
-    plt.savefig(buffer, format='png', dpi=300)
-    buffer.seek(0)
-    plt.close()
     caption = (
         f"📊 *Comparativo Mensal*\n\n"
         f"*{'─'*10} Resumo Geral {'─'*10}*\n"
@@ -506,7 +482,7 @@ def criar_relatorio_comparativo(df_atual, df_anterior, mes_atual, ano_atual,
     if not top_aumentos.empty:
         caption += "📈 *Principais Aumentos:*\n"
         for cat, row in top_aumentos.iterrows():
-            caption += f"  • *{cat}*: +{format_brl(row['variacao'])}{calc_percent_change(row['atual'], row['anterior'])}\n"
+            caption += f"  • *{cat}*: +{format_brl(row['variacao'])}{calc_percent_change(row['atual'], row['anterior'])}\n"
     return buffer, caption
 
 
@@ -555,13 +531,22 @@ async def show_main_menu(update: Update,
 
 
 # --- HANDLERS DE COMANDOS E BOTÕES ---
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    if user.id not in AUTHORIZED_USERS:
-        await update.message.reply_text(
-            "❌ Desculpe, você não tem permissão para usar este bot.")
-        return
+async def start_command(update, context):
+    user_id = str(update.message.from_user.id)
+    first_name = update.message.from_user.first_name
+    
+    # Adiciona o usuário ao banco de dados se ele ainda não existir
+    with conn.cursor() as cur:
+        cur.execute(
+            """INSERT INTO users (telegram_id, first_name) VALUES (%s, %s) ON CONFLICT (telegram_id) DO NOTHING;""",
+            (user_id, first_name)
+        )
+    conn.commit()
+    
+    # Remove a mensagem de start para manter o chat limpo
     await update.message.delete()
+    
+    # Chama o menu principal, como o seu código já fazia
     await show_main_menu(update, context)
 
 
@@ -600,7 +585,7 @@ async def generic_button_handler(update: Update,
         tipo = data.split('_')[1]
         context.user_data.clear()
         context.user_data['tipo_transacao'] = tipo
-        categorias = db.get_categorias(tipo)
+        categorias = get_categorias(tipo)
         keyboard = [[
             InlineKeyboardButton(f"{icone} {nome}",
                                  callback_data=f"cat_{nome}")
@@ -625,7 +610,7 @@ async def generic_button_handler(update: Update,
 
     elif data == "saldo":
         hoje = get_brazil_now()
-        df = db.gerar_relatorio_mensal(hoje.month, hoje.year)
+        df = gerar_relatorio_mensal(hoje.month, hoje.year)
         receitas = df[df['tipo'] ==
                       'receita']['total'].sum() if not df.empty else 0
         despesas = df[df['tipo'] ==
@@ -646,7 +631,7 @@ async def generic_button_handler(update: Update,
             parse_mode='Markdown')
 
     elif data == "extrato":
-        lancamentos = db.get_ultimos_lancamentos()
+        lancamentos = get_ultimos_lancamentos()
         keyboard = [[
             InlineKeyboardButton("⬅️ Voltar ao Menu",
                                  callback_data="menu_principal")
@@ -657,8 +642,8 @@ async def generic_button_handler(update: Update,
             texto = "📝 *Últimos Lançamentos:*\n\n"
             for tx_id, data_t, tipo, cat, desc, valor, user_id_lanc in lancamentos:
                 emoji = "💸" if tipo == 'despesa' else "💰"
-                texto += f"{emoji} _{format_date_br(data_t)}_ - *{cat}*\n"
-                texto += f"   _{desc}_ - *{format_brl(valor)}*\n"
+                texto += f"{emoji} _{format_date_br(str(data_t))}_ - *{cat}*\n"
+                texto += f"   _{desc}_ - *{format_brl(valor)}*\n"
 
         await query.edit_message_text(
             texto,
@@ -695,8 +680,8 @@ async def generic_button_handler(update: Update,
             hoje = get_brazil_now()
             ano_anterior, mes_anterior = get_previous_month(
                 hoje.year, hoje.month)
-            df_atual = db.gerar_relatorio_mensal(hoje.month, hoje.year)
-            df_anterior = db.gerar_relatorio_mensal(mes_anterior, ano_anterior)
+            df_atual = gerar_relatorio_mensal(hoje.month, hoje.year)
+            df_anterior = gerar_relatorio_mensal(mes_anterior, ano_anterior)
             if df_anterior.empty:
                 await query.edit_message_text(
                     "Ainda não há dados do mês anterior para comparar.",
@@ -716,9 +701,9 @@ async def generic_button_handler(update: Update,
             detalhado = (tipo_relatorio == 'detalhado')
             hoje = get_brazil_now()
             await query.edit_message_text("⏳ Gerando relatório, um momento...")
-            df = db.gerar_relatorio_mensal(hoje.month,
-                                          hoje.year,
-                                          detalhado=detalhado)
+            df = gerar_relatorio_mensal(hoje.month,
+                                        hoje.year,
+                                        detalhado=detalhado)
             if df.empty:
                 await query.edit_message_text(
                     f"Nenhum dado encontrado para {meses[calendar.month_name[hoje.month]].capitalize()}.",
@@ -778,7 +763,7 @@ async def generic_button_handler(update: Update,
             parse_mode='Markdown')
 
     elif data == "confirmar_zerar":
-        db.zerar_dados()
+        zerar_dados()
         await query.edit_message_text(
             "✅ Todos os dados foram apagados com sucesso!")
         await show_main_menu(update,
@@ -786,7 +771,7 @@ async def generic_button_handler(update: Update,
                              message_id=query.message.message_id)
 
     elif data == "orc_definir":
-        categorias = db.get_categorias('despesa')
+        categorias = get_categorias('despesa')
         keyboard = [[
             InlineKeyboardButton(f"{icone} {nome}",
                                  callback_data=f"orc_cat_{nome}")
@@ -809,7 +794,7 @@ async def generic_button_handler(update: Update,
 
     elif data == "orc_ver":
         hoje = get_brazil_now()
-        orcamentos = db.get_todos_orcamentos(hoje.month, hoje.year)
+        orcamentos = get_todos_orcamentos(hoje.month, hoje.year)
         if not orcamentos:
             await query.edit_message_text(
                 "Nenhum orçamento definido para este mês.",
@@ -826,7 +811,7 @@ async def generic_button_handler(update: Update,
         texto = f"📋 *Orçamentos de {meses[calendar.month_name[hoje.month]].capitalize()}*\n\n"
         keyboard = []
         for categoria, limite in orcamentos:
-            _, gasto, disponivel, percentual = db.get_orcamento_status(
+            _, gasto, disponivel, percentual = get_orcamento_status(
                 categoria, hoje.month, hoje.year)
             barra = "▪" * int(
                 percentual / 10) + "▫" * (10 - int(percentual / 10))
@@ -848,15 +833,15 @@ async def generic_button_handler(update: Update,
     elif data.startswith("orc_gastos_"):
         categoria = data[11:]
         hoje = get_brazil_now()
-        transacoes = db.get_transacoes_por_categoria(categoria, hoje.month,
-                                                     hoje.year)
+        transacoes = get_transacoes_por_categoria(categoria, hoje.month,
+                                                    hoje.year)
         texto = f"💸 *Gastos em {categoria}*\n\n"
         if not transacoes:
             texto += "Nenhum gasto este mês."
         else:
             total = 0
             for data_t, desc, valor in transacoes:
-                texto += f"_{format_date_br(data_t)}_: {desc} - *{format_brl(valor)}*\n"
+                texto += f"_{format_date_br(str(data_t))}_: {desc} - *{format_brl(valor)}*\n"
                 total += valor
             texto += f"\n*Total Gasto:* {format_brl(total)}"
         keyboard = [[
@@ -870,7 +855,7 @@ async def generic_button_handler(update: Update,
 
     elif data.startswith("edit_tx_"):
         tx_id = int(data.split("_")[-1])
-        tx = db.get_transacao(tx_id)
+        tx = get_transacao(tx_id)
         if not tx:
             await query.edit_message_text("Transação não encontrada. 😕",
                                           reply_markup=InlineKeyboardMarkup([[
@@ -888,7 +873,7 @@ async def generic_button_handler(update: Update,
 
         await query.edit_message_text(
             text=
-            f"✏️ *Editar valor*\n\nCategoria: *{_cat}*\nData: *{format_date_br(_data)}*\nDescrição: _{_desc}_\nValor atual: *{format_brl(_valor)}*\n\n👉 Envie o *novo valor* (ex: 150,50):",
+            f"✏️ *Editar valor*\n\nCategoria: *{_cat}*\nData: *{format_date_br(str(_data))}*\nDescrição: _{_desc}_\nValor atual: *{format_brl(_valor)}*\n\n👉 Envie o *novo valor* (ex: 150,50):",
             parse_mode='Markdown')
 
 
@@ -940,7 +925,8 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     Handler para mensagens de texto.
     """
     user_id = update.effective_user.id
-    if user_id not in AUTHORIZED_USERS:
+    if user_id not in [int(u) for u in AUTHORIZED_USERS]:
+        await update.message.reply_text("❌ Desculpe, você não tem permissão para usar este bot.")
         return
 
     step = context.user_data.get('step')
@@ -1039,51 +1025,45 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception:
                 pass
 
-        tx_id = db.add_transacao(user_id, context.user_data['tipo_transacao'],
-                                 context.user_data['categoria_transacao'],
-                                 context.user_data['valor_transacao'],
-                                 descricao,
-                                 context.user_data['data_transacao'])
+        add_transacao(str(user_id), context.user_data['tipo_transacao'],
+                         context.user_data['categoria_transacao'],
+                         context.user_data['valor_transacao'],
+                         descricao,
+                         context.user_data['data_transacao'])
 
-        if not tx_id:
-            feedback = "⚠️ Transação duplicada detectada! Não foi adicionada."
-            await context.bot.send_message(chat_id=chat_id,
-                                           text=feedback,
-                                           parse_mode='Markdown')
-        else:
-            data_obj = datetime.strptime(context.user_data['data_transacao'],
-                                         '%Y-%m-%d')
-            mes_contabilizado = meses[calendar.month_name[
-                data_obj.month]].capitalize()
+        data_obj = datetime.strptime(context.user_data['data_transacao'],
+                                        '%Y-%m-%d')
+        mes_contabilizado = meses[calendar.month_name[
+            data_obj.month]].capitalize()
 
-            feedback = (
-                f"{'💸' if context.user_data['tipo_transacao'] == 'despesa' else '💰'} *Transação Registrada!*\n\n"
-                f"Categoria: *{context.user_data['categoria_transacao']}*\n"
-                f"Data: *{format_date_br(context.user_data['data_insercao'])}*\n"
-                f"Contabilizado para: *{mes_contabilizado}*\n"
-                f"Valor: *{format_brl(context.user_data['valor_transacao'])}*\n"
-                f"Descrição: _{descricao}_")
+        feedback = (
+            f"{'💸' if context.user_data['tipo_transacao'] == 'despesa' else '💰'} *Transação Registrada!*\n\n"
+            f"Categoria: *{context.user_data['categoria_transacao']}*\n"
+            f"Data: *{format_date_br(context.user_data['data_insercao'])}*\n"
+            f"Contabilizado para: *{mes_contabilizado}*\n"
+            f"Valor: *{format_brl(context.user_data['valor_transacao'])}*\n"
+            f"Descrição: _{descricao}_")
 
-            keyboard = InlineKeyboardMarkup([[
-                InlineKeyboardButton("✏️ Editar valor",
-                                     callback_data=f"edit_tx_{tx_id}")
-            ]])
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("✏️ Editar valor",
+                                 callback_data=f"edit_tx_{tx_id}")
+        ]])
 
-            if context.user_data['tipo_transacao'] == 'despesa':
-                data_obj = datetime.strptime(
-                    context.user_data['data_transacao'], '%Y-%m-%d')
-                _, _, _, percentual = db.get_orcamento_status(
-                    context.user_data['categoria_transacao'], data_obj.month,
-                    data_obj.year)
-                alerta = get_alerta_divertido(
-                    context.user_data['categoria_transacao'], percentual)
-                if alerta:
-                    feedback += f"\n\n{alerta}"
+        if context.user_data['tipo_transacao'] == 'despesa':
+            data_obj = datetime.strptime(
+                context.user_data['data_transacao'], '%Y-%m-%d')
+            _, _, _, percentual = get_orcamento_status(
+                context.user_data['categoria_transacao'], data_obj.month,
+                data_obj.year)
+            alerta = get_alerta_divertido(
+                context.user_data['categoria_transacao'], percentual)
+            if alerta:
+                feedback += f"\n\n{alerta}"
 
-            await context.bot.send_message(chat_id=chat_id,
-                                           text=feedback,
-                                           reply_markup=keyboard,
-                                           parse_mode='Markdown')
+        await context.bot.send_message(chat_id=chat_id,
+                                       text=feedback,
+                                       reply_markup=keyboard,
+                                       parse_mode='Markdown')
 
         context.user_data.clear()
         await show_main_menu(update, context)
@@ -1094,7 +1074,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             valor = float(text.replace('.', '').replace(',', '.'))
             categoria = context.user_data['categoria_orcamento']
             hoje = get_brazil_now()
-            db.set_orcamento(categoria, valor, hoje.month, hoje.year)
+            set_orcamento(categoria, valor, hoje.month, hoje.year)
             feedback = f"✅ Orçamento de *{categoria}* definido para *{format_brl(valor)}*."
             keyboard = [[
                 InlineKeyboardButton("🎯 Definir Outro Orçamento",
@@ -1150,7 +1130,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             novo_valor = float(text.replace('.', '').replace(',', '.'))
             tx_id = context.user_data.get('edit_tx_id')
-            sucesso = db.update_transacao_valor(tx_id, novo_valor)
+            sucesso = update_transacao_valor(tx_id, novo_valor)
             if not sucesso:
                 raise ValueError("Falha ao atualizar")
 
@@ -1237,6 +1217,9 @@ def main():
     # Inicia o servidor web em uma thread separada
     web_thread = threading.Thread(target=run_web_server, daemon=True)
     web_thread.start()
+    
+    # Inicia o banco de dados
+    setup_database()
 
     # Inicia o bot na thread principal
     run_bot()
@@ -1244,6 +1227,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
-
-
