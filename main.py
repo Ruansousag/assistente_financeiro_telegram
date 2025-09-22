@@ -19,7 +19,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 import os
 import psycopg
 
-# CONEXÃO COM O BANCO DE DADOS
+# --- CONEXÃO COM O BANCO DE DADOS ---
 # A conexão agora é feita usando as variáveis de ambiente do Railway
 conn = psycopg.connect(
     host=os.getenv("PGHOST"),
@@ -28,10 +28,10 @@ conn = psycopg.connect(
     dbname=os.getenv("PGDATABASE")
 )
 
-# Função para criar uma tabela (agora no PostgreSQL)
+# --- FUNÇÕES DE BANCO DE DADOS (AGORA PARA POSTGRESQL) ---
 def setup_database():
     with conn.cursor() as cur:
-        # A tabela "users" foi adicionada para guardar os usuários que usam o bot
+        # Tabela de usuários para autorização e dados
         cur.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 id SERIAL PRIMARY KEY,
@@ -39,7 +39,7 @@ def setup_database():
                 first_name VARCHAR(255)
             );
         """)
-        # A tabela "transacoes" foi alterada para se adequar ao PostgreSQL
+        # Tabela de transações com referência à tabela de usuários
         cur.execute("""
             CREATE TABLE IF NOT EXISTS transacoes (
                 id SERIAL PRIMARY KEY,
@@ -52,7 +52,7 @@ def setup_database():
                 created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
             );
         """)
-        # A tabela "orcamentos" foi alterada para se adequar ao PostgreSQL
+        # Tabela de orçamentos
         cur.execute("""
             CREATE TABLE IF NOT EXISTS orcamentos (
                 id SERIAL PRIMARY KEY,
@@ -63,7 +63,7 @@ def setup_database():
                 UNIQUE(categoria, mes, ano)
             );
         """)
-        # A tabela "categorias" foi alterada para se adequar ao PostgreSQL
+        # Tabela de categorias
         cur.execute("""
             CREATE TABLE IF NOT EXISTS categorias (
                 id SERIAL PRIMARY KEY,
@@ -72,6 +72,7 @@ def setup_database():
                 icone TEXT
             );
         """)
+        
         # Garante que as categorias padrão são criadas apenas uma vez
         cur.execute("SELECT COUNT(*) FROM categorias")
         if cur.fetchone()[0] == 0:
@@ -197,9 +198,6 @@ def update_transacao_valor(tx_id, novo_valor):
             logging.error(f"Erro ao atualizar transação {tx_id}: {e}")
             return False
 
-
-# --- FUNÇÕES AUXILIARES E DE LÓGICA DO BOT (MANTIDAS) ---
-# ... (o resto do seu código, que não precisa de alteração) ...
 
 # --- FUNÇÕES AUXILIARES ---
 logging.basicConfig(
@@ -370,7 +368,6 @@ def calc_percent_change(current, previous):
     return f" ({'+' if change >= 0 else ''}{change:.1f}%)"
 
 
-# --- FUNÇÕES DE LÓGICA E VISUALIZAÇÃO ---
 def get_alerta_divertido(categoria, percentual_usado):
     alertas = {
         50: [f"🤔 Metade do orçamento de *{categoria}* já foi..."],
@@ -472,16 +469,98 @@ def criar_relatorio_visual(df, mes, ano):
     caption = (
         f"📊 *Comparativo Mensal*\n\n"
         f"*{'─'*10} Resumo Geral {'─'*10}*\n"
-        f"💰 Receitas: {format_brl(rec_atual)}{calc_percent_change(rec_atual, rec_anterior)}\n"
-        f"💸 Despesas: {format_brl(desp_atual)}{calc_percent_change(desp_atual, desp_anterior)}\n"
-        f"*{'💚 Saldo' if (rec_atual - desp_atual) >= 0 else '❤️ Saldo'}: {format_brl(rec_atual - desp_atual)}*\n\n"
+        f"💰 Receitas: {format_brl(receitas)}{calc_percent_change(receitas, desp_anterior)}\n"
+        f"💸 Despesas: {format_brl(despesas)}{calc_percent_change(despesas, desp_anterior)}\n"
+        f"*{'💚 Saldo' if saldo >= 0 else '❤️ Saldo'}: {format_brl(saldo)}*\n\n"
         f"*{'─'*10} Análise das Despesas {'─'*10}*\n")
+    
+    # Criar um DataFrame para o comparativo de despesas
+    despesas_ant = df_anterior[df_anterior['tipo'] == 'despesa'].set_index('categoria')['total']
+    df_comp = pd.concat([despesas_cat.set_index('categoria')['total'], despesas_ant],
+                        axis=1,
+                        keys=['atual', 'anterior']).fillna(0)
+    
     top_aumentos = df_comp[df_comp['variacao'] > 0].sort_values(
         'variacao', ascending=False).head(3)
     if not top_aumentos.empty:
         caption += "📈 *Principais Aumentos:*\n"
         for cat, row in top_aumentos.iterrows():
-            caption += f"  • *{cat}*: +{format_brl(row['variacao'])}{calc_percent_change(row['atual'], row['anterior'])}\n"
+            caption += f"  • *{cat}*: +{format_brl(row['variacao'])}{calc_percent_change(row['atual'], row['anterior'])}\n"
+            
+    return buffer, caption
+
+
+def criar_relatorio_detalhado(df, mes, ano):
+    if df.empty:
+        return None
+    df_sorted = df.sort_values(by='tipo', ascending=False)
+    nome_mes_ano = f"{meses[calendar.month_name[mes]].capitalize()}/{ano}"
+    buffer = StringIO()
+    buffer.write(f"Relatório Detalhado - {nome_mes_ano}\n{'='*50}\n\n")
+    for _, row in df_sorted.iterrows():
+        sinal = '+' if row['tipo'] == 'receita' else '-'
+        buffer.write(
+            f"Data: {format_date_br(str(row['data']))}\nTipo: {row['tipo'].capitalize()}\nCategoria: {row['categoria']}\n"
+        )
+        buffer.write(
+            f"Descrição: {row['descricao']}\nValor: {sinal}{format_brl(row['valor']).replace('R$ ', '')}\n{'-'*30}\n"
+        )
+    buffer.seek(0)
+    return buffer
+
+
+def criar_relatorio_comparativo(df_atual, df_anterior, mes_atual, ano_atual,
+                                mes_anterior, ano_anterior):
+    rec_atual = df_atual[df_atual['tipo'] == 'receita']['total'].sum()
+    desp_atual = df_atual[df_atual['tipo'] == 'despesa']['total'].sum()
+    rec_anterior = df_anterior[df_anterior['tipo'] == 'receita']['total'].sum()
+    desp_anterior = df_anterior[df_anterior['tipo'] ==
+                                'despesa']['total'].sum()
+    
+    despesas_atual_cat = df_atual[df_atual['tipo'] == 'despesa'].set_index('categoria')['total']
+    despesas_anterior_cat = df_anterior[
+        df_anterior['tipo'] == 'despesa'].set_index('categoria')['total']
+        
+    df_comp = pd.concat([despesas_atual_cat, despesas_anterior_cat],
+                        axis=1,
+                        keys=['atual', 'anterior']).fillna(0)
+                        
+    df_comp['variacao'] = df_comp['atual'] - df_comp['anterior']
+    fig, ax = plt.subplots(figsize=(12, 8))
+    df_comp[['anterior', 'atual'
+             ]].sort_values(by='atual',
+                            ascending=True).plot(kind='barh',
+                                                  ax=ax,
+                                                  color=['#ff9999', '#ff4d4d'])
+    ax.set_title(
+        f"Comparativo de Despesas: {meses[calendar.month_name[mes_anterior]].capitalize()} vs {meses[calendar.month_name[mes_atual]].capitalize()}",
+        fontsize=16)
+    ax.set_xlabel('Valor (R$)')
+    ax.set_ylabel('Categorias')
+    ax.legend(['Mês Anterior', 'Mês Atual'])
+    plt.tight_layout()
+    buffer = BytesIO()
+    plt.savefig(buffer, format='png', dpi=300)
+    buffer.seek(0)
+    plt.close()
+    
+    saldo_atual = rec_atual - desp_atual
+    saldo_anterior = rec_anterior - desp_anterior
+    
+    caption = (
+        f"📊 *Comparativo Mensal*\n\n"
+        f"*{'─'*10} Resumo Geral {'─'*10}*\n"
+        f"💰 Receitas: {format_brl(rec_atual)}{calc_percent_change(rec_atual, rec_anterior)}\n"
+        f"💸 Despesas: {format_brl(desp_atual)}{calc_percent_change(desp_atual, desp_anterior)}\n"
+        f"*{'💚 Saldo' if saldo_atual >= 0 else '❤️ Saldo'}: {format_brl(saldo_atual)}{calc_percent_change(saldo_atual, saldo_anterior)}*\n\n"
+        f"*{'─'*10} Análise das Despesas {'─'*10}*\n")
+        
+    top_aumentos = df_comp[df_comp['variacao'] > 0].sort_values(
+        'variacao', ascending=False).head(3)
+    if not top_aumentos.empty:
+        caption += "📈 *Principais Aumentos:*\n"
+        for cat, row in top_aumentos.iterrows():
+            caption += f"  • *{cat}*: +{format_brl(row['variacao'])}{calc_percent_change(row['atual'], row['anterior'])}\n"
     return buffer, caption
 
 
@@ -833,7 +912,7 @@ async def generic_button_handler(update: Update,
         categoria = data[11:]
         hoje = get_brazil_now()
         transacoes = get_transacoes_por_categoria(categoria, hoje.month,
-                                                    hoje.year)
+                                                  hoje.year)
         texto = f"💸 *Gastos em {categoria}*\n\n"
         if not transacoes:
             texto += "Nenhum gasto este mês."
@@ -924,7 +1003,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     Handler para mensagens de texto.
     """
     user_id = update.effective_user.id
-    if user_id not in [int(u) for u in AUTHORIZED_USERS]:
+    if str(user_id) not in AUTHORIZED_USERS:
         await update.message.reply_text("❌ Desculpe, você não tem permissão para usar este bot.")
         return
 
