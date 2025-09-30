@@ -12,7 +12,7 @@ import threading
 import os
 from flask import Flask, render_template_string, jsonify
 import pytz
-from decimal import Decimal # ADICIONADO: Importado para correção de formatação de valores
+from decimal import Decimal # Importado para correção de formatação de valores e uso no código
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackQueryHandler, ContextTypes
@@ -347,7 +347,80 @@ app = Flask(__name__)
 @app.route('/')
 def home():
     return render_template_string('''
-    <!DOCTYPE Lógica do servidor web (Flask) mantida idêntica para o requisito do usuário.
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Bot Financeiro - Status</title>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <style>
+            body {
+                font-family: Arial, sans-serif;
+                margin: 0;
+                padding: 20px;
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                color: white;
+                min-height: 100vh;
+            }
+            .container {
+                max-width: 600px;
+                margin: 0 auto;
+                background: rgba(255,255,255,0.1);
+                padding: 30px;
+                border-radius: 15px;
+                backdrop-filter: blur(10px);
+                box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+            }
+            .status {
+                text-align: center;
+                padding: 20px;
+                background: rgba(0, 255, 0, 0.2);
+                border-radius: 10px;
+                margin: 20px 0;
+            }
+            .info {
+                background: rgba(255,255,255,0.1);
+                padding: 15px;
+                border-radius: 8px;
+                margin: 10px 0;
+            }
+            h1 { text-align: center; margin-bottom: 30px; }
+            .emoji { font-size: 2em; margin: 10px; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>🤖 Bot Assistente Financeiro</h1>
+            <div class="status">
+                <div class="emoji">✅</div>
+                <h2>Bot Online e Funcionando!</h2>
+                <p>Status: <strong>Ativo</strong></p>
+                <p>Última verificação: <span id="timestamp"></span></p>
+            </div>
+            <div class="info">
+                <h3>📊 Funcionalidades</h3>
+                <ul>
+                    <li>💸 Registro de despesas</li>
+                    <li>💰 Registro de receitas</li>
+                    <li>🎯 Controle de orçamentos</li>
+                    <li>📈 Relatórios detalhados</li>
+                    <li>📋 Extratos mensais</li>
+                </ul>
+            </div>
+            <div class="info">
+                <h3>🔧 Como usar</h3>
+                <p>Envie <code>/start</code> no Telegram para começar a usar o bot!</p>
+            </div>
+        </div>
+        <script>
+            function updateTimestamp() {
+                document.getElementById('timestamp').textContent = new Date().toLocaleString('pt-BR');
+            }
+            updateTimestamp();
+            setInterval(updateTimestamp, 1000);
+        </script>
+    </body>
+    </html>
     ''')
 
 @app.route('/status')
@@ -375,7 +448,6 @@ def health():
 
 # --- FUNÇÕES AUXILIARES ---
 def format_brl(value):
-    # CORRIGIDO: Adicionado Decimal para reconhecer o tipo de dado do banco
     if not isinstance(value, (int, float, Decimal)):
         return "R$ 0,00"
     try:
@@ -409,8 +481,143 @@ def get_alerta_divertido(categoria, percentual_usado):
     nivel = next((n for n in [100, 80, 50] if percentual_usado >= n), 0)
     return random.choice(alertas[nivel]) if nivel else None
 
-# Funções de Relatório (sem alterações)
-# ...
+def criar_relatorio_visual(df, mes, ano):
+    if df.empty:
+        return None
+    
+    receitas = df[df['tipo'] == 'receita']['total'].sum()
+    despesas = df[df['tipo'] == 'despesa']['total'].sum()
+    saldo = receitas - despesas
+    nome_mes_ano = f"{meses[calendar.month_name[mes]].capitalize()}/{ano}"
+
+    plt.style.use('seaborn-v0_8-whitegrid')
+    fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+    fig.suptitle(f'Relatório Financeiro - {nome_mes_ano}', fontsize=20, weight='bold')
+
+    # Gráfico de despesas
+    despesas_cat = df[df['tipo'] == 'despesa']
+    if not despesas_cat.empty:
+        axes[0, 0].pie(despesas_cat['total'], labels=despesas_cat['categoria'], 
+                       autopct='%1.1f%%', startangle=140, 
+                       colors=sns.color_palette("Reds_r", len(despesas_cat)))
+        axes[0, 0].set_title('Composição das Despesas', fontsize=14)
+    else:
+        axes[0, 0].text(0.5, 0.5, 'Sem despesas', ha='center', va='center', fontsize=14)
+        axes[0, 0].set_title('Composição das Despesas', fontsize=14)
+
+    # Gráfico de receitas
+    receitas_cat = df[df['tipo'] == 'receita']
+    if not receitas_cat.empty:
+        axes[0, 1].pie(receitas_cat['total'], labels=receitas_cat['categoria'], 
+                       autopct='%1.1f%%', startangle=140, 
+                       colors=sns.color_palette("Greens_r", len(receitas_cat)))
+        axes[0, 1].set_title('Composição das Receitas', fontsize=14)
+    else:
+        axes[0, 1].text(0.5, 0.5, 'Sem receitas', ha='center', va='center', fontsize=14)
+        axes[0, 1].set_title('Composição das Receitas', fontsize=14)
+
+    # Resumo financeiro
+    cores = ['green', 'red', 'blue' if saldo >= 0 else 'orange']
+    sns.barplot(x=['Receitas', 'Despesas', 'Saldo'], y=[receitas, despesas, saldo], 
+                ax=axes[1, 0], palette=cores)
+    axes[1, 0].set_title('Resumo Financeiro do Mês', fontsize=14)
+    axes[1, 0].set_ylabel('Valor (R$)')
+    
+    for p in axes[1, 0].patches:
+        axes[1, 0].annotate(format_brl(p.get_height()),
+                            (p.get_x() + p.get_width() / 2., p.get_height()),
+                            ha='center', va='center', xytext=(0, 9),
+                            textcoords='offset points')
+
+    # Top 5 despesas
+    top_despesas = despesas_cat.sort_values('total', ascending=False).head(5)
+    if not top_despesas.empty:
+        sns.barplot(x='total', y='categoria', data=top_despesas, 
+                    ax=axes[1, 1], palette='Reds_r', orient='h')
+        axes[1, 1].set_title('Top 5 Despesas', fontsize=14)
+        axes[1, 1].set_xlabel('Valor (R$)')
+        axes[1, 1].set_ylabel('')
+    else:
+        axes[1, 1].axis('off')
+        axes[1, 1].text(0.5, 0.5, 'Sem despesas\npara o ranking', 
+                        ha='center', va='center', fontsize=12)
+
+    plt.tight_layout(rect=[0, 0, 1, 0.96])
+    buffer = BytesIO()
+    plt.savefig(buffer, format='png', dpi=300)
+    buffer.seek(0)
+    plt.close()
+    
+    return buffer
+
+def criar_relatorio_detalhado(df, mes, ano):
+    if df.empty:
+        return None
+    
+    df_sorted = df.sort_values(by='tipo', ascending=False)
+    nome_mes_ano = f"{meses[calendar.month_name[mes]].capitalize()}/{ano}"
+    buffer = StringIO()
+    buffer.write(f"Relatório Detalhado - {nome_mes_ano}\n{'='*50}\n\n")
+    
+    for _, row in df_sorted.iterrows():
+        sinal = '+' if row['tipo'] == 'receita' else '-'
+        buffer.write(
+            f"Data: {format_date_br(str(row['data']))}\nTipo: {row['tipo'].capitalize()}\nCategoria: {row['categoria']}\n"
+        )
+        buffer.write(
+            f"Descrição: {row['descricao']}\nValor: {sinal}{format_brl(row['valor']).replace('R$ ', '')}\n{'-'*30}\n"
+        )
+    
+    buffer.seek(0)
+    return buffer
+
+def criar_relatorio_comparativo(df_atual, df_anterior, mes_atual, ano_atual, mes_anterior, ano_anterior):
+    rec_atual = df_atual[df_atual['tipo'] == 'receita']['total'].sum()
+    desp_atual = df_atual[df_atual['tipo'] == 'despesa']['total'].sum()
+    rec_anterior = df_anterior[df_anterior['tipo'] == 'receita']['total'].sum()
+    desp_anterior = df_anterior[df_anterior['tipo'] == 'despesa']['total'].sum()
+    
+    despesas_atual_cat = df_atual[df_atual['tipo'] == 'despesa'].set_index('categoria')['total']
+    despesas_anterior_cat = df_anterior[df_anterior['tipo'] == 'despesa'].set_index('categoria')['total']
+    
+    df_comp = pd.concat([despesas_atual_cat, despesas_anterior_cat],
+                        axis=1, keys=['atual', 'anterior']).fillna(0)
+    df_comp['variacao'] = df_comp['atual'] - df_comp['anterior']
+    
+    fig, ax = plt.subplots(figsize=(12, 8))
+    df_comp[['anterior', 'atual']].sort_values(by='atual', ascending=True).plot(
+        kind='barh', ax=ax, color=['#ff9999', '#ff4d4d'])
+    ax.set_title(
+        f"Comparativo de Despesas: {meses[calendar.month_name[mes_anterior]].capitalize()} vs {meses[calendar.month_name[mes_atual]].capitalize()}",
+        fontsize=16)
+    ax.set_xlabel('Valor (R$)')
+    ax.set_ylabel('Categorias')
+    ax.legend(['Mês Anterior', 'Mês Atual'])
+    
+    plt.tight_layout()
+    buffer = BytesIO()
+    plt.savefig(buffer, format='png', dpi=300)
+    buffer.seek(0)
+    plt.close()
+    
+    saldo_atual = rec_atual - desp_atual
+    saldo_anterior = rec_anterior - desp_anterior
+    
+    caption = (
+        f"📊 *Comparativo Mensal*\n\n"
+        f"*{'─'*10} Resumo Geral {'─'*10}*\n"
+        f"💰 Receitas: {format_brl(rec_atual)}{calc_percent_change(rec_atual, rec_anterior)}\n"
+        f"💸 Despesas: {format_brl(desp_atual)}{calc_percent_change(desp_atual, desp_anterior)}\n"
+        f"*{'💚 Saldo' if saldo_atual >= 0 else '❤️ Saldo'}: {format_brl(saldo_atual)}{calc_percent_change(saldo_atual, saldo_anterior)}*\n\n"
+        f"*{'─'*10} Análise das Despesas {'─'*10}*\n")
+    
+    top_aumentos = df_comp[df_comp['variacao'] > 0].sort_values('variacao', ascending=False).head(3)
+    if not top_aumentos.empty:
+        caption += "📈 *Principais Aumentos:*\n"
+        for cat, row in top_aumentos.iterrows():
+            caption += f"  • *{cat}*: +{format_brl(row['variacao'])}{calc_percent_change(row['atual'], row['anterior'])}\n"
+    
+    return buffer, caption
 
 # --- FUNÇÕES DE MENU E NAVEGAÇÃO ---
 async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, message_id=None):
@@ -454,6 +661,57 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, mes
             text=text,
             reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode='Markdown')
+
+# NOVO: Função para gerar o resumo da transação (para edição)
+async def send_or_edit_summary(context: ContextTypes.DEFAULT_TYPE, chat_id, tx_id, message_id=None):
+    """Gera o resumo de uma transação e envia ou edita a mensagem."""
+    tx = get_transacao(tx_id)
+    if not tx:
+        return
+
+    _id, _user, _tipo, _cat, _valor, _desc, _data, _created = tx
+    
+    data_obj = _data
+    mes_contabilizado = meses[calendar.month_name[data_obj.month]].capitalize()
+
+    feedback = (
+        f"{'💸' if _tipo == 'despesa' else '💰'} *Transação Registrada! (EDITADA)*\n\n"
+        f"ID da Transação: #{_id}\n"
+        f"Categoria: *{_cat}*\n"
+        f"Data: *{format_date_br(str(_data))}*\n"
+        f"Contabilizado para: *{mes_contabilizado}*\n"
+        f"Valor: *{format_brl(_valor)}*\n"
+        f"Descrição: _{_desc}_"
+    )
+
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✏️ Editar Transação", callback_data=f"edit_tx_{_id}")
+    ]])
+
+    if message_id:
+        try:
+            await context.bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=feedback,
+                reply_markup=keyboard,
+                parse_mode='Markdown')
+        except Exception as e:
+            # Caso a edição falhe (mensagem muito antiga), envia uma nova
+            logging.warning(f"Falha ao editar mensagem {message_id}: {e}. Enviando nova.")
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=feedback,
+                reply_markup=keyboard,
+                parse_mode='Markdown')
+    else:
+        # Se não houver message_id para editar, apenas envia (como na primeira inserção)
+        sent_message = await context.bot.send_message(
+            chat_id=chat_id, 
+            text=feedback, 
+            reply_markup=keyboard, 
+            parse_mode='Markdown')
+        return sent_message.message_id
 
 
 # --- HANDLERS DE COMANDOS E BOTÕES ---
@@ -754,11 +1012,11 @@ async def generic_button_handler(update: Update, context: ContextTypes.DEFAULT_T
 
         _id, _user, _tipo, _cat, _valor, _desc, _data, _created = tx
         
-        # Armazena os dados da transação para o processo de edição
+        # Armazena os dados da transação E O ID DA MENSAGEM para o processo de edição
         context.user_data.clear()
         context.user_data['edit_tx_id'] = _id
         context.user_data['edit_tx_tipo'] = _tipo
-        context.user_data['message_id_to_edit'] = query.message.message_id
+        context.user_data['message_id_to_edit'] = query.message.message_id # SALVANDO O ID DA MENSAGEM
         
         # Mensagem de resumo para edição
         texto_resumo = (
@@ -789,10 +1047,12 @@ async def generic_button_handler(update: Update, context: ContextTypes.DEFAULT_T
         campo = partes[2]
         tx_id = int(partes[3])
         
+        # O message_id_to_edit JÁ ESTÁ EM context.user_data, então não limpamos aqui
+        message_id_to_edit = context.user_data.get('message_id_to_edit', query.message.message_id)
         context.user_data.clear()
         context.user_data['edit_tx_id'] = tx_id
-        context.user_data['message_id_to_edit'] = query.message.message_id
-
+        context.user_data['message_id_to_edit'] = message_id_to_edit # MANTÉM O ID DA MENSAGEM
+        
         if campo == 'valor':
             context.user_data['step'] = 'editar_valor_transacao'
             await query.edit_message_text(
@@ -824,19 +1084,16 @@ async def generic_button_handler(update: Update, context: ContextTypes.DEFAULT_T
     elif data.startswith("edit_cat_select_"):
         categoria = data[len("edit_cat_select_"):]
         tx_id = context.user_data.get('edit_tx_id')
+        message_id_to_edit = context.user_data.get('message_id_to_edit')
         
         if tx_id and context.user_data.get('step') == 'editar_categoria_transacao':
             # Usa a função centralizada para atualizar a categoria
             sucesso = update_transacao_campo(tx_id, 'categoria', categoria)
             
             if sucesso:
-                await query.edit_message_text(
-                    f"✅ Categoria atualizada para: *{categoria}*.",
-                    parse_mode='Markdown',
-                    reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("🔄 Ver Extrato Atualizado", callback_data="extrato")],
-                        [InlineKeyboardButton("🏠 Menu Principal", callback_data="menu_principal")]
-                    ]))
+                # NOVO FLUXO: Edita a mensagem com o resumo atualizado
+                await send_or_edit_summary(context, query.message.chat_id, tx_id, message_id_to_edit)
+                await query.answer(text=f"✅ Categoria atualizada para {categoria}.")
             else:
                 await query.edit_message_text(
                     "❌ Falha ao atualizar a categoria. Tente novamente.",
@@ -974,6 +1231,11 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         descricao = text
+        
+        # O message_id_to_edit neste ponto é o ID da mensagem com a Data
+        # O ID da mensagem de confirmação final será salvo a partir do send_or_edit_summary
+        
+        # Deleta a mensagem temporária de data/descrição
         if message_id_to_edit:
             try:
                 await context.bot.delete_message(chat_id=chat_id, message_id=message_id_to_edit)
@@ -986,32 +1248,18 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             descricao,
                             context.user_data['data_transacao'])
 
-        data_obj = datetime.strptime(context.user_data['data_transacao'], '%Y-%m-%d')
-        mes_contabilizado = meses[calendar.month_name[data_obj.month]].capitalize()
+        # Envia a mensagem final de confirmação (com o botão de edição)
+        sent_message_id = await send_or_edit_summary(context, chat_id, tx_id)
 
-        feedback = (
-            f"{'💸' if context.user_data['tipo_transacao'] == 'despesa' else '💰'} *Transação Registrada!*\n\n"
-            f"Categoria: *{context.user_data['categoria_transacao']}*\n"
-            f"Data: *{format_date_br(context.user_data['data_insercao'])}*\n"
-            f"Contabilizado para: *{mes_contabilizado}*\n"
-            f"Valor: *{format_brl(context.user_data['valor_transacao'])}*\n"
-            f"Descrição: _{descricao}_")
-
-        keyboard = InlineKeyboardMarkup([[
-            InlineKeyboardButton("✏️ Editar valor", callback_data=f"edit_tx_{tx_id}")
-        ]])
-
+        # Resto da lógica (alerta de orçamento) mantida
         if context.user_data['tipo_transacao'] == 'despesa':
             data_obj = datetime.strptime(context.user_data['data_transacao'], '%Y-%m-%d')
             _, _, _, percentual = get_orcamento_status(
                 context.user_data['categoria_transacao'], data_obj.month, data_obj.year)
             alerta = get_alerta_divertido(context.user_data['categoria_transacao'], percentual)
             if alerta:
-                feedback += f"\n\n{alerta}"
-
-        await context.bot.send_message(chat_id=chat_id, text=feedback, 
-                                     reply_markup=keyboard, parse_mode='Markdown')
-
+                await context.bot.send_message(chat_id=chat_id, text=alerta, parse_mode='Markdown')
+        
         context.user_data.clear()
         await show_main_menu(update, context)
         return
@@ -1063,22 +1311,23 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if step == 'editar_valor_transacao':
-        # Lógica de edição de valor (agora usa update_transacao_valor)
+        # Lógica de edição de valor
         try:
             novo_valor = float(text.replace('.', '').replace(',', '.'))
             tx_id = context.user_data.get('edit_tx_id')
+            message_id_to_edit = context.user_data.get('message_id_to_edit')
+            
             sucesso = update_transacao_valor(tx_id, novo_valor)
             if not sucesso:
                 raise ValueError("Falha ao atualizar")
 
+            # NOVO FLUXO: Edita a mensagem com o resumo atualizado
+            await send_or_edit_summary(context, chat_id, tx_id, message_id_to_edit)
+            
             await context.bot.send_message(
                 chat_id=chat_id,
                 text=f"✅ Valor atualizado com sucesso para *{format_brl(novo_valor)}*!",
-                parse_mode='Markdown',
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔄 Ver Extrato Atualizado", callback_data="extrato")],
-                    [InlineKeyboardButton("🏠 Menu Principal", callback_data="menu_principal")]
-                ]))
+                parse_mode='Markdown')
             context.user_data.clear()
 
         except (ValueError, TypeError):
@@ -1094,18 +1343,18 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if step == 'editar_descricao_transacao':
         descricao = text
         tx_id = context.user_data.get('edit_tx_id')
-        # Usa a função centralizada para atualizar a descrição
+        message_id_to_edit = context.user_data.get('message_id_to_edit')
+        
         sucesso = update_transacao_campo(tx_id, 'descricao', descricao)
         
         if sucesso:
+            # NOVO FLUXO: Edita a mensagem com o resumo atualizado
+            await send_or_edit_summary(context, chat_id, tx_id, message_id_to_edit)
+            
             await context.bot.send_message(
                 chat_id=chat_id,
                 text=f"✅ Descrição atualizada para: *{descricao}*.",
-                parse_mode='Markdown',
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔄 Ver Extrato Atualizado", callback_data="extrato")],
-                    [InlineKeyboardButton("🏠 Menu Principal", callback_data="menu_principal")]
-                ]))
+                parse_mode='Markdown')
         else:
             await context.bot.send_message(
                 chat_id=chat_id,
