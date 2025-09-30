@@ -187,6 +187,12 @@ def add_transacao(user_id, tipo, categoria, valor, descricao, data):
     result = execute_with_retry(query, (user_id, tipo, categoria, float(valor), descricao, data))
     return result[0] if result else None
 
+# NOVA FUNÇÃO: Exclui uma transação pelo ID
+def delete_transacao(tx_id):
+    """Exclui uma transação da tabela 'transacoes'."""
+    query = "DELETE FROM transacoes WHERE id = %s"
+    return execute_with_retry(query, (tx_id,))
+
 def get_orcamento_status(categoria, mes, ano):
     orcamento_result = execute_with_retry(
         'SELECT valor_limite FROM orcamentos WHERE categoria = %s AND mes = %s AND ano = %s',
@@ -374,8 +380,6 @@ def home():
             <div class="status">
                 <div class="emoji">✅</div>
                 <h2>Bot Online e Funcionando!</h2>
-                <p>Status: <strong>Ativo</strong></p>
-                <p>Última verificação: <span id="timestamp"></span></p>
             </div>
             <div class="info">
                 <h3>📊 Funcionalidades</h3>
@@ -409,7 +413,7 @@ def status():
         'status': 'online',
         'bot': 'financial_assistant',
         'timestamp': datetime.now().isoformat(),
-        'version': '13.7' # Versão atualizada para refletir a correção final
+        'version': '13.9' # Versão atualizada para refletir a nova funcionalidade
     })
 
 @app.route('/health')
@@ -633,7 +637,8 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, mes
             reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode='Markdown')
 
-async def send_or_edit_summary(context: ContextTypes.DEFAULT_TYPE, chat_id, tx_id, message_id=None):
+# Função atualizada para usar is_edited
+async def send_or_edit_summary(context: ContextTypes.DEFAULT_TYPE, chat_id, tx_id, message_id=None, is_edited=False):
     tx = get_transacao(tx_id)
     if not tx:
         return
@@ -643,8 +648,11 @@ async def send_or_edit_summary(context: ContextTypes.DEFAULT_TYPE, chat_id, tx_i
     data_obj = _data
     mes_contabilizado = meses[calendar.month_name[data_obj.month]].capitalize()
 
+    # Lógica para incluir ou não (EDITADA)
+    status_text = " (EDITADA)" if is_edited else ""
+
     feedback = (
-        f"{'💸' if _tipo == 'despesa' else '💰'} *Transação Registrada! (EDITADA)*\n\n"
+        f"{'💸' if _tipo == 'despesa' else '💰'} *Transação Registrada!{status_text}*\n\n"
         f"ID da Transação: #{_id}\n"
         f"Categoria: *{_cat}*\n"
         f"Data: *{format_date_br(str(_data))}*\n"
@@ -741,8 +749,6 @@ async def generic_button_handler(update: Update, context: ContextTypes.DEFAULT_T
         await query.edit_message_text(
             f"Categoria: *{categoria_principal}*\n\nQual o valor?",
             parse_mode='Markdown')
-
-    # Removido: elif data.startswith("subcat_"):
 
     elif data == "saldo":
         hoje = get_brazil_now()
@@ -937,15 +943,14 @@ async def generic_button_handler(update: Update, context: ContextTypes.DEFAULT_T
             reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode='Markdown')
 
-    # NOVO: Processa o cancelamento de edição ou reexibição do resumo
+    # Fluxo para voltar ao resumo da transação após cancelamento
     elif data.startswith("show_tx_"):
         tx_id = int(data.split("_")[-1])
-        # Re-exibe o resumo da transação, mantendo o ID da mensagem para edição
         await send_or_edit_summary(context, query.message.chat_id, tx_id, query.message.message_id)
-        # O answer é importante para remover o relógio de carregamento do botão
         await query.answer(text="Edição cancelada.")
         return
 
+    # Inicia o menu de edição da transação
     elif data.startswith("edit_tx_"):
         tx_id = int(data.split("_")[-1])
         tx = get_transacao(tx_id)
@@ -977,13 +982,68 @@ async def generic_button_handler(update: Update, context: ContextTypes.DEFAULT_T
             [InlineKeyboardButton("💰 Mudar Valor", callback_data=f"edit_campo_valor_{_id}")],
             [InlineKeyboardButton("🏷️ Mudar Categoria", callback_data=f"edit_campo_categoria_{_id}")],
             [InlineKeyboardButton("📝 Mudar Descrição", callback_data=f"edit_campo_descricao_{_id}")],
-            [InlineKeyboardButton("❌ Cancelar Edição", callback_data=f"show_tx_{_id}")] # CORRIGIDO AQUI: Volta para o resumo original
+            [InlineKeyboardButton("❌ Cancelar Edição", callback_data=f"show_tx_{_id}")],
+            [InlineKeyboardButton("🗑️ Excluir Transação", callback_data=f"confirm_delete_{_id}")] # NOVO BOTÃO
         ])
 
         await query.edit_message_text(
             text=texto_resumo,
             reply_markup=keyboard,
             parse_mode='Markdown')
+
+    # Confirmação de Exclusão (NOVO BLOCO)
+    elif data.startswith("confirm_delete_"):
+        tx_id = int(data.split("_")[-1])
+        tx = get_transacao(tx_id)
+        
+        if not tx:
+            await query.edit_message_text("❌ Transação não encontrada.",
+                                         reply_markup=InlineKeyboardMarkup([[
+                                             InlineKeyboardButton("🏠 Menu Principal", callback_data="menu_principal")
+                                         ]]))
+            return
+            
+        _id, _user, _tipo, _cat, _valor, _desc, _data, _created = tx
+        
+        texto_confirmacao = (
+            f"⚠️ *Confirmação de Exclusão* ⚠️\n\n"
+            f"Você tem certeza que deseja *excluir permanentemente* a transação #{tx_id} ({_cat}, {format_brl(_valor)})?\n\n"
+            f"*ESTA AÇÃO NÃO PODE SER DESFEITA.*"
+        )
+        
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔴 SIM, EXCLUIR!", callback_data=f"delete_tx_{tx_id}")],
+            [InlineKeyboardButton("⬅️ Cancelar (Voltar a Editar)", callback_data=f"edit_tx_{tx_id}")]
+        ])
+        
+        await query.edit_message_text(
+            text=texto_confirmacao,
+            reply_markup=keyboard,
+            parse_mode='Markdown'
+        )
+
+    # Execução da Exclusão (NOVO BLOCO)
+    elif data.startswith("delete_tx_"):
+        tx_id = int(data.split("_")[-1])
+        
+        # Exclui do banco de dados
+        result = delete_transacao(tx_id)
+        
+        if result is not None and result > 0:
+            await query.edit_message_text(
+                f"✅ Transação #{tx_id} excluída com sucesso.",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("📝 Ver Últimos Lançamentos", callback_data="extrato"),
+                    InlineKeyboardButton("🏠 Menu Principal", callback_data="menu_principal")
+                ]])
+            )
+        else:
+            await query.edit_message_text(
+                "❌ Falha ao excluir transação. Tente novamente ou verifique o log.",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🏠 Menu Principal", callback_data="menu_principal")
+                ]])
+            )
 
     elif data.startswith("edit_campo_"):
         partes = data.split('_')
@@ -1003,14 +1063,14 @@ async def generic_button_handler(update: Update, context: ContextTypes.DEFAULT_T
             await query.edit_message_text(
                 text="👉 Envie o *novo valor* (ex: 150,50):",
                 parse_mode='Markdown',
-                reply_markup=cancel_keyboard) # CORRIGIDO AQUI
+                reply_markup=cancel_keyboard)
 
         elif campo == 'descricao':
             context.user_data['step'] = 'editar_descricao_transacao'
             await query.edit_message_text(
                 text="👉 Envie a *nova descrição*:",
                 parse_mode='Markdown',
-                reply_markup=cancel_keyboard) # CORRIGIDO AQUI
+                reply_markup=cancel_keyboard)
 
         elif campo == 'categoria':
             context.user_data['step'] = 'editar_categoria_transacao'
@@ -1020,7 +1080,7 @@ async def generic_button_handler(update: Update, context: ContextTypes.DEFAULT_T
             categorias = get_categorias(tipo_tx)
             keyboard = [[InlineKeyboardButton(f"{icone} {nome}", callback_data=f"edit_cat_select_{nome}")] 
                         for nome, icone in categorias]
-            keyboard.append([InlineKeyboardButton("❌ Cancelar", callback_data=f"edit_tx_{tx_id}")]) # CORRIGIDO AQUI
+            keyboard.append([InlineKeyboardButton("❌ Cancelar", callback_data=f"edit_tx_{tx_id}")])
             
             await query.edit_message_text(
                 f"Selecione a *nova categoria*:",
@@ -1036,13 +1096,13 @@ async def generic_button_handler(update: Update, context: ContextTypes.DEFAULT_T
             sucesso = update_transacao_campo(tx_id, 'categoria', categoria)
             
             if sucesso:
-                await send_or_edit_summary(context, query.message.chat_id, tx_id, message_id_to_edit)
+                await send_or_edit_summary(context, query.message.chat_id, tx_id, message_id_to_edit, is_edited=True)
                 await query.answer(text=f"✅ Categoria atualizada para {categoria}.")
             else:
                 await query.edit_message_text(
                     "❌ Falha ao atualizar a categoria. Tente novamente.",
                     reply_markup=InlineKeyboardMarkup([[
-                        InlineKeyboardButton("❌ Cancelar", callback_data=f"edit_tx_{tx_id}") # Volta para menu de edição
+                        InlineKeyboardButton("❌ Cancelar", callback_data=f"edit_tx_{tx_id}")
                     ]]))
             
             context.user_data.clear()
@@ -1178,6 +1238,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                               descricao,
                               context.user_data['data_transacao'])
 
+        # Nova transação: is_edited=False
         sent_message_id = await send_or_edit_summary(context, chat_id, tx_id)
 
         if context.user_data['tipo_transacao'] == 'despesa':
@@ -1244,7 +1305,8 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not sucesso:
                 raise ValueError("Falha ao atualizar")
 
-            await send_or_edit_summary(context, chat_id, tx_id, message_id_to_edit)
+            # Edição concluída: is_edited=True
+            await send_or_edit_summary(context, chat_id, tx_id, message_id_to_edit, is_edited=True)
             
             await context.bot.send_message(
                 chat_id=chat_id,
@@ -1269,7 +1331,8 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         sucesso = update_transacao_campo(tx_id, 'descricao', descricao)
         
         if sucesso:
-            await send_or_edit_summary(context, chat_id, tx_id, message_id_to_edit)
+            # Edição concluída: is_edited=True
+            await send_or_edit_summary(context, chat_id, tx_id, message_id_to_edit, is_edited=True)
             
             await context.bot.send_message(
                 chat_id=chat_id,
@@ -1320,7 +1383,7 @@ def run_bot():
     application.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
 
-    print("🤖 Bot assistente financeiro v13.7 (Fluxo de edição corrigido) iniciado!")
+    print("🤖 Bot assistente financeiro v13.9 (Exclusão e Edição de Mensagem Corrigidos) iniciado!")
     application.run_polling()
 
 
