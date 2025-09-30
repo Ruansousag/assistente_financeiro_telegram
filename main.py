@@ -788,6 +788,7 @@ async def generic_button_handler(update: Update, context: ContextTypes.DEFAULT_T
         tipo_transacao = context.user_data['tipo_transacao']
 
         # VERIFICAÇÃO PARA SUBCATEGORIAS DE CARTÃO
+        # Usamos .upper() e 'CARTÃO' para capturar qualquer cartão (Nubank, BRB, CVC, CAIXA)
         if tipo_transacao == 'despesa' and 'CARTÃO' in categoria_principal.upper():
             
             # Filtra apenas as subcategorias que começam com 'Cartão -'
@@ -815,7 +816,7 @@ async def generic_button_handler(update: Update, context: ContextTypes.DEFAULT_T
                     f"Categoria Principal: *{categoria_principal}*\n\nSelecione o *tipo de gasto* no cartão:",
                     reply_markup=InlineKeyboardMarkup(keyboard),
                     parse_mode='Markdown')
-                return # CORREÇÃO CRÍTICA: Retorna aqui para não prosseguir para o passo 'valor_transacao'
+                return # CORREÇÃO CRÍTICA: Retorna aqui para interromper o fluxo padrão
         
         # LÓGICA PADRÃO (Se não for cartão ou se pular)
         context.user_data['message_id_to_edit'] = query.message.message_id
