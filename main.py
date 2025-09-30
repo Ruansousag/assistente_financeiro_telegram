@@ -12,7 +12,7 @@ import threading
 import os
 from flask import Flask, render_template_string, jsonify
 import pytz
-from decimal import Decimal # Importado para correção de formatação de valores e uso no código
+from decimal import Decimal
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackQueryHandler, ContextTypes
@@ -163,7 +163,19 @@ def setup_database():
             ('Cartão CVC', 'despesa', '💳'),
             ('Transporte', 'despesa', '🚗'),
             ('Educação', 'despesa', '📚'),
-            ('Diversos', 'ambos', '📦')
+            ('Diversos', 'ambos', '📦'),
+            
+            # NOVAS SUBCATEGORIAS DE CARTÃO
+            ('Cartão - Farmácia', 'despesa', '💊'),
+            ('Cartão - Gasolina', 'despesa', '⛽'),
+            ('Cartão - Lanche', 'despesa', '🍔'),
+            ('Cartão - Laser', 'despesa', '🎉'),
+            ('Cartão - Mercado', 'despesa', '🛒'),
+            ('Cartão - Padaria', 'despesa', '🥐'),
+            ('Cartão - Passagem', 'despesa', '🚌'),
+            ('Cartão - Shopee', 'despesa', '📦'),
+            ('Cartão - Streaming', 'despesa', '📺'),
+            ('Cartão - Uber', 'despesa', '🚕'),
         ]
         
         for categoria in categorias_default:
@@ -619,48 +631,183 @@ def criar_relatorio_comparativo(df_atual, df_anterior, mes_atual, ano_atual, mes
     
     return buffer, caption
 
-# --- FUNÇÕES DE MENU E NAVEGAÇÃO ---
-async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, message_id=None):
-    # Lógica do menu principal (sem alterações)
-    # ...
-    keyboard = [
-        [
-            InlineKeyboardButton("💸 Nova Despesa", callback_data="add_despesa"),
-            InlineKeyboardButton("💰 Nova Receita", callback_data="add_receita")
-        ],
-        [
-            InlineKeyboardButton("📊 Relatórios", callback_data="relatorios"),
-            InlineKeyboardButton("🎯 Orçamentos", callback_data="orcamentos")
-        ],
-        [
-            InlineKeyboardButton("📋 Saldo do Mês", callback_data="saldo"),
-            InlineKeyboardButton("📝 Últimos Lançamentos", callback_data="extrato")
-        ]
-    ]
+def get_ultimos_lancamentos(limit=7):
+    query = """
+        SELECT id, data, tipo, categoria, descricao, valor, user_id 
+        FROM transacoes 
+        ORDER BY id DESC LIMIT %s
+    """
+    return execute_with_retry(query, (limit,), fetch=True)
+
+def get_transacao(tx_id):
+    query = "SELECT * FROM transacoes WHERE id = %s"
+    result = execute_with_retry(query, (tx_id,), fetch=True)
+    return result[0] if result else None
+
+# Função centralizada para atualizar qualquer campo da transação
+def update_transacao_campo(tx_id, campo, novo_valor):
+    try:
+        # Garante que apenas campos válidos possam ser atualizados
+        if campo not in ['valor', 'categoria', 'descricao']:
+            return False
+            
+        # O valor é convertido para float apenas se o campo for 'valor'
+        valor_ajustado = float(novo_valor) if campo == 'valor' else novo_valor
+        
+        query = f"UPDATE transacoes SET {campo} = %s WHERE id = %s"
+        params = (valor_ajustado, tx_id)
+
+        result = execute_with_retry(query, params)
+        return result > 0
+    except Exception as e:
+        logging.error(f"Erro ao atualizar transação {tx_id} no campo {campo}: {e}")
+        return False
+        
+def update_transacao_valor(tx_id, novo_valor):
+    """Atualiza o valor de uma transação usando a função centralizada."""
+    return update_transacao_campo(tx_id, 'valor', novo_valor)
+
+def add_user(user_id, first_name):
+    """Adiciona um usuário ao banco de dados"""
+    query = """
+        INSERT INTO users (telegram_id, first_name) 
+        VALUES (%s, %s) 
+        ON CONFLICT (telegram_id) DO NOTHING
+    """
+    execute_with_retry(query, (user_id, first_name))
+
+# --- FUNÇÕES AUXILIARES ---
+# Dicionário de tradução dos meses
+meses = {
+    'January': 'Janeiro',
+    'February': 'Fevereiro',
+    'March': 'Março',
+    'April': 'Abril',
+    'May': 'Maio',
+    'June': 'Junho',
+    'July': 'Julho',
+    'August': 'Agosto',
+    'September': 'Setembro',
+    'October': 'Outubro',
+    'November': 'Novembro',
+    'December': 'Dezembro'
+}
+
+# CONFIGURAÇÕES DO BOT
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+AUTHORIZED_USERS = [id.strip() for id in os.getenv("AUTHORIZED_USERS", "").split(',')]
+
+# Define o fuso horário do Brasil
+BRAZIL_TZ = pytz.timezone('America/Sao_Paulo')
+
+# Função para obter a data e hora atual no fuso horário do Brasil
+def get_brazil_now():
+    return datetime.now(BRAZIL_TZ)
+
+# --- SERVIDOR WEB FLASK ---
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return render_template_string('''
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Bot Financeiro - Status</title>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <style>
+            body {
+                font-family: Arial, sans-serif;
+                margin: 0;
+                padding: 20px;
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                color: white;
+                min-height: 100vh;
+            }
+            .container {
+                max-width: 600px;
+                margin: 0 auto;
+                background: rgba(255,255,255,0.1);
+                padding: 30px;
+                border-radius: 15px;
+                backdrop-filter: blur(10px);
+                box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+            }
+            .status {
+                text-align: center;
+                padding: 20px;
+                background: rgba(0, 255, 0, 0.2);
+                border-radius: 10px;
+                margin: 20px 0;
+            }
+            .info {
+                background: rgba(255,255,255,0.1);
+                padding: 15px;
+                border-radius: 8px;
+                margin: 10px 0;
+            }
+            h1 { text-align: center; margin-bottom: 30px; }
+            .emoji { font-size: 2em; margin: 10px; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>🤖 Bot Assistente Financeiro</h1>
+            <div class="status">
+                <div class="emoji">✅</div>
+                <h2>Bot Online e Funcionando!</h2>
+                <p>Status: <strong>Ativo</strong></p>
+                <p>Última verificação: <span id="timestamp"></span></p>
+            </div>
+            <div class="info">
+                <h3>📊 Funcionalidades</h3>
+                <ul>
+                    <li>💸 Registro de despesas</li>
+                    <li>💰 Registro de receitas</li>
+                    <li>🎯 Controle de orçamentos</li>
+                    <li>📈 Relatórios detalhados</li>
+                    <li>📋 Extratos mensais</li>
+                </ul>
+            </div>
+            <div class="info">
+                <h3>🔧 Como usar</h3>
+                <p>Envie <code>/start</code> no Telegram para começar a usar o bot!</p>
+            </div>
+        </div>
+        <script>
+            function updateTimestamp() {
+                document.getElementById('timestamp').textContent = new Date().toLocaleString('pt-BR');
+            }
+            updateTimestamp();
+            setInterval(updateTimestamp, 1000);
+        </script>
+    </body>
+    </html>
+    ''')
+
+@app.route('/status')
+def status():
+    return jsonify({
+        'status': 'online',
+        'bot': 'financial_assistant',
+        'timestamp': datetime.now().isoformat(),
+        'version': '13.4'
+    })
+
+@app.route('/health')
+def health():
+    try:
+        # Teste simples de conexão com o banco
+        execute_with_retry("SELECT 1", fetch=True)
+        db_status = "healthy"
+    except:
+        db_status = "error"
     
-    text = "🏠 *Menu Principal*\n\nO que vamos organizar agora?"
-    chat_id = update.effective_chat.id
-    
-    if message_id:
-        try:
-            await context.bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=message_id,
-                text=text,
-                reply_markup=InlineKeyboardMarkup(keyboard),
-                parse_mode='Markdown')
-        except Exception:
-            await context.bot.send_message(
-                chat_id=chat_id,
-                text=text,
-                reply_markup=InlineKeyboardMarkup(keyboard),
-                parse_mode='Markdown')
-    else:
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text=text,
-            reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode='Markdown')
+    return jsonify({
+        'status': 'healthy',
+        'database': db_status
+    })
 
 # NOVO: Função para gerar o resumo da transação (para edição)
 async def send_or_edit_summary(context: ContextTypes.DEFAULT_TYPE, chat_id, tx_id, message_id=None):
@@ -713,11 +860,49 @@ async def send_or_edit_summary(context: ContextTypes.DEFAULT_TYPE, chat_id, tx_i
             parse_mode='Markdown')
         return sent_message.message_id
 
+# --- FUNÇÕES DE MENU E NAVEGAÇÃO ---
+async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, message_id=None):
+    keyboard = [
+        [
+            InlineKeyboardButton("💸 Nova Despesa", callback_data="add_despesa"),
+            InlineKeyboardButton("💰 Nova Receita", callback_data="add_receita")
+        ],
+        [
+            InlineKeyboardButton("📊 Relatórios", callback_data="relatorios"),
+            InlineKeyboardButton("🎯 Orçamentos", callback_data="orcamentos")
+        ],
+        [
+            InlineKeyboardButton("📋 Saldo do Mês", callback_data="saldo"),
+            InlineKeyboardButton("📝 Últimos Lançamentos", callback_data="extrato")
+        ]
+    ]
+    
+    text = "🏠 *Menu Principal*\n\nO que vamos organizar agora?"
+    chat_id = update.effective_chat.id
+    
+    if message_id:
+        try:
+            await context.bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=text,
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode='Markdown')
+        except Exception:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=text,
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode='Markdown')
+    else:
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=text,
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode='Markdown')
 
 # --- HANDLERS DE COMANDOS E BOTÕES ---
 async def start_command(update, context):
-    # Lógica do start_command (sem alterações)
-    # ...
     user_id = str(update.message.from_user.id)
     first_name = update.message.from_user.first_name
     
@@ -734,8 +919,6 @@ async def start_command(update, context):
     await show_main_menu(update, context)
 
 async def zerar_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Lógica do zerar_command (sem alterações)
-    # ...
     await update.message.delete()
     keyboard = [
         [InlineKeyboardButton("🗑️ SIM, APAGAR TUDO!", callback_data="confirmar_zerar")],
@@ -778,12 +961,64 @@ async def generic_button_handler(update: Update, context: ContextTypes.DEFAULT_T
             parse_mode='Markdown')
 
     elif data.startswith("cat_"):
+        categoria_principal = data[4:]
+        tipo_transacao = context.user_data['tipo_transacao']
+
+        # VERIFICAÇÃO PARA SUBCATEGORIAS DE CARTÃO
+        if tipo_transacao == 'despesa' and 'CARTÃO' in categoria_principal.upper():
+            
+            # Filtra apenas as subcategorias que começam com 'Cartão -'
+            subcategorias_raw = execute_with_retry(
+                "SELECT nome, icone FROM categorias WHERE nome LIKE 'Cartão - %' ORDER BY nome",
+                fetch=True
+            )
+            
+            if subcategorias_raw:
+                # Armazena a categoria principal (ex: Cartão NUBANK)
+                context.user_data['categoria_principal_cartao'] = categoria_principal 
+
+                # Cria o teclado com as subcategorias
+                # .split(' - ')[1] remove o prefixo 'Cartão - ' para a exibição
+                keyboard = [[InlineKeyboardButton(f"{icone} {nome.split(' - ')[1]}", 
+                                                callback_data=f"subcat_{nome}")] 
+                            for nome, icone in subcategorias_raw]
+                
+                # Adiciona um botão para pular a subcategoria e usar a principal
+                keyboard.append([InlineKeyboardButton("➡️ Usar Categoria Principal", 
+                                                    callback_data=f"subcat_pular_{categoria_principal}")])
+                keyboard.append([InlineKeyboardButton("⬅️ Voltar às Categorias", callback_data=f"add_{tipo_transacao}")])
+                
+                await query.edit_message_text(
+                    f"Categoria Principal: *{categoria_principal}*\n\nSelecione o *tipo de gasto* no cartão:",
+                    reply_markup=InlineKeyboardMarkup(keyboard),
+                    parse_mode='Markdown')
+                return # Interrompe o fluxo normal e espera a subcategoria
+        
+        # LÓGICA PADRÃO (Se não for cartão ou se pular)
         context.user_data['message_id_to_edit'] = query.message.message_id
-        categoria = data[4:]
-        context.user_data['categoria_transacao'] = categoria
+        context.user_data['categoria_transacao'] = categoria_principal # Usa a principal se não for um cartão ou se for ignorado
         context.user_data['step'] = 'valor_transacao'
         await query.edit_message_text(
-            f"Categoria: *{categoria}*\n\nQual o valor?",
+            f"Categoria: *{categoria_principal}*\n\nQual o valor?",
+            parse_mode='Markdown')
+
+    # NOVO BLOCO: Processamento da Subcategoria
+    elif data.startswith("subcat_"):
+        partes = data.split('_')
+        
+        if partes[1] == 'pular':
+            # Usa a categoria principal que já está na URL de callback
+            categoria_final = partes[2] 
+        else:
+            # Usa a subcategoria completa que foi passada no callback
+            categoria_final = data[len("subcat_"):]
+        
+        context.user_data['message_id_to_edit'] = query.message.message_id
+        context.user_data['categoria_transacao'] = categoria_final
+        context.user_data['step'] = 'valor_transacao'
+        
+        await query.edit_message_text(
+            f"Categoria: *{categoria_final}*\n\nQual o valor?",
             parse_mode='Markdown')
 
     elif data == "saldo":
@@ -1110,8 +1345,9 @@ async def generic_button_handler(update: Update, context: ContextTypes.DEFAULT_T
 
 
 async def data_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Lógica de seleção de data (sem alterações)
-    # ...
+    """
+    Handler para os botões de seleção de data.
+    """
     query = update.callback_query
     await query.answer()
     data = query.data
@@ -1231,9 +1467,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         descricao = text
-        
-        # O message_id_to_edit neste ponto é o ID da mensagem com a Data
-        # O ID da mensagem de confirmação final será salvo a partir do send_or_edit_summary
         
         # Deleta a mensagem temporária de data/descrição
         if message_id_to_edit:
