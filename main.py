@@ -140,6 +140,7 @@ def setup_database():
     for query in queries:
         execute_with_retry(query)
     
+    # Inserir categorias padrão se não existirem
     count_result = execute_with_retry("SELECT COUNT(*) FROM categorias", fetch=True)
     if count_result[0][0] == 0:
         categorias_default = [
@@ -158,16 +159,9 @@ def setup_database():
             ('Transporte', 'despesa', '🚗'),
             ('Educação', 'despesa', '📚'),
             ('Diversos', 'ambos', '📦'),
-            ('Cartão - Farmácia', 'despesa', '💊'),
-            ('Cartão - Gasolina', 'despesa', '⛽'),
-            ('Cartão - Lanche', 'despesa', '🍔'),
-            ('Cartão - Laser', 'despesa', '🎉'),
-            ('Cartão - Mercado', 'despesa', '🛒'),
-            ('Cartão - Padaria', 'despesa', '🥐'),
-            ('Cartão - Passagem', 'despesa', '🚌'),
-            ('Cartão - Shopee', 'despesa', '📦'),
-            ('Cartão - Streaming', 'despesa', '📺'),
-            ('Cartão - Uber', 'despesa', '🚕'),
+            
+            # Subcategorias de cartão removidas daqui
+            # Apenas as categorias principais são mantidas
         ]
         
         for categoria in categorias_default:
@@ -418,7 +412,7 @@ def status():
         'status': 'online',
         'bot': 'financial_assistant',
         'timestamp': datetime.now().isoformat(),
-        'version': '13.5'
+        'version': '13.6' # Versão atualizada para refletir a limpeza do código
     })
 
 @app.route('/health')
@@ -484,8 +478,8 @@ def criar_relatorio_visual(df, mes, ano):
     despesas_cat = df[df['tipo'] == 'despesa']
     if not despesas_cat.empty:
         axes[0, 0].pie(despesas_cat['total'], labels=despesas_cat['categoria'], 
-                       autopct='%1.1f%%', startangle=140, 
-                       colors=sns.color_palette("Reds_r", len(despesas_cat)))
+                        autopct='%1.1f%%', startangle=140, 
+                        colors=sns.color_palette("Reds_r", len(despesas_cat)))
         axes[0, 0].set_title('Composição das Despesas', fontsize=14)
     else:
         axes[0, 0].text(0.5, 0.5, 'Sem despesas', ha='center', va='center', fontsize=14)
@@ -494,8 +488,8 @@ def criar_relatorio_visual(df, mes, ano):
     receitas_cat = df[df['tipo'] == 'receita']
     if not receitas_cat.empty:
         axes[0, 1].pie(receitas_cat['total'], labels=receitas_cat['categoria'], 
-                       autopct='%1.1f%%', startangle=140, 
-                       colors=sns.color_palette("Greens_r", len(receitas_cat)))
+                        autopct='%1.1f%%', startangle=140, 
+                        colors=sns.color_palette("Greens_r", len(receitas_cat)))
         axes[0, 1].set_title('Composição das Receitas', fontsize=14)
     else:
         axes[0, 1].text(0.5, 0.5, 'Sem receitas', ha='center', va='center', fontsize=14)
@@ -523,7 +517,7 @@ def criar_relatorio_visual(df, mes, ano):
     else:
         axes[1, 1].axis('off')
         axes[1, 1].text(0.5, 0.5, 'Sem despesas\npara o ranking', 
-                        ha='center', va='center', fontsize=12)
+                         ha='center', va='center', fontsize=12)
 
     plt.tight_layout(rect=[0, 0, 1, 0.96])
     buffer = BytesIO()
@@ -564,7 +558,7 @@ def criar_relatorio_comparativo(df_atual, df_anterior, mes_atual, ano_atual, mes
     despesas_anterior_cat = df_anterior[df_anterior['tipo'] == 'despesa'].set_index('categoria')['total']
     
     df_comp = pd.concat([despesas_atual_cat, despesas_anterior_cat],
-                        axis=1, keys=['atual', 'anterior']).fillna(0)
+                         axis=1, keys=['atual', 'anterior']).fillna(0)
     df_comp['variacao'] = df_comp['atual'] - df_comp['anterior']
     
     fig, ax = plt.subplots(figsize=(12, 8))
@@ -598,7 +592,7 @@ def criar_relatorio_comparativo(df_atual, df_anterior, mes_atual, ano_atual, mes
     if not top_aumentos.empty:
         caption += "📈 *Principais Aumentos:*\n"
         for cat, row in top_aumentos.iterrows():
-            caption += f"  • *{cat}*: +{format_brl(row['variacao'])}{calc_percent_change(row['atual'], row['anterior'])}\n"
+            caption += f"  • *{cat}*: +{format_brl(row['variacao'])}{calc_percent_change(row['atual'], row['anterior'])}\n"
     
     return buffer, caption
 
@@ -733,7 +727,7 @@ async def generic_button_handler(update: Update, context: ContextTypes.DEFAULT_T
         context.user_data['tipo_transacao'] = tipo
         categorias = get_categorias(tipo)
         keyboard = [[InlineKeyboardButton(f"{icone} {nome}", callback_data=f"cat_{nome}")] 
-                   for nome, icone in categorias]
+                    for nome, icone in categorias]
         keyboard.append([InlineKeyboardButton("⬅️ Voltar ao Menu", callback_data="menu_principal")])
         await query.edit_message_text(
             f"Selecione a categoria da *{tipo}*:",
@@ -742,34 +736,10 @@ async def generic_button_handler(update: Update, context: ContextTypes.DEFAULT_T
 
     elif data.startswith("cat_"):
         categoria_principal = data[4:]
-        tipo_transacao = context.user_data['tipo_transacao']
-
-        # VERIFICAÇÃO PARA SUBCATEGORIAS DE CARTÃO (CORRIGIDA)
-        if tipo_transacao == 'despesa' and ('CARTÃO' in categoria_principal.upper() or 'CARTAO' in categoria_principal.upper()):
-            
-            subcategorias_raw = execute_with_retry(
-                "SELECT nome, icone FROM categorias WHERE nome LIKE 'Cartão - %' ORDER BY nome",
-                fetch=True
-            )
-            
-            if subcategorias_raw:
-                context.user_data['categoria_principal_cartao'] = categoria_principal 
-
-                keyboard = [[InlineKeyboardButton(f"{icone} {nome.split(' - ')[1]}", 
-                                                callback_data=f"subcat_{nome}")] 
-                            for nome, icone in subcategorias_raw]
-                
-                keyboard.append([InlineKeyboardButton("➡️ Usar Categoria Principal", 
-                                                    callback_data=f"subcat_pular_{categoria_principal}")])
-                keyboard.append([InlineKeyboardButton("⬅️ Voltar às Categorias", callback_data=f"add_{tipo_transacao}")])
-                
-                await query.edit_message_text(
-                    f"Categoria Principal: *{categoria_principal}*\n\nSelecione o *tipo de gasto* no cartão:",
-                    reply_markup=InlineKeyboardMarkup(keyboard),
-                    parse_mode='Markdown')
-                return
         
-        # LÓGICA PADRÃO
+        # Lógica de subcategoria removida. O fluxo agora segue o PADRÃO:
+        
+        # LÓGICA PADRÃO: Vai direto para a inserção do valor
         context.user_data['message_id_to_edit'] = query.message.message_id
         context.user_data['categoria_transacao'] = categoria_principal
         context.user_data['step'] = 'valor_transacao'
@@ -777,21 +747,7 @@ async def generic_button_handler(update: Update, context: ContextTypes.DEFAULT_T
             f"Categoria: *{categoria_principal}*\n\nQual o valor?",
             parse_mode='Markdown')
 
-    elif data.startswith("subcat_"):
-        partes = data.split('_')
-        
-        if partes[1] == 'pular':
-            categoria_final = partes[2] 
-        else:
-            categoria_final = data[len("subcat_"):]
-        
-        context.user_data['message_id_to_edit'] = query.message.message_id
-        context.user_data['categoria_transacao'] = categoria_final
-        context.user_data['step'] = 'valor_transacao'
-        
-        await query.edit_message_text(
-            f"Categoria: *{categoria_final}*\n\nQual o valor?",
-            parse_mode='Markdown')
+    # Bloco 'elif data.startswith("subcat_")' removido
 
     elif data == "saldo":
         hoje = get_brazil_now()
@@ -820,7 +776,7 @@ async def generic_button_handler(update: Update, context: ContextTypes.DEFAULT_T
             for tx_id, data_t, tipo, cat, desc, valor, user_id_lanc in lancamentos:
                 emoji = "💸" if tipo == 'despesa' else "💰"
                 texto += f"{emoji} _{format_date_br(str(data_t))}_ - *{cat}*\n"
-                texto += f"   _{desc}_ - *{format_brl(valor)}*\n"
+                texto += f"   _{desc}_ - *{format_brl(valor)}*\n"
 
         await query.edit_message_text(
             texto,
@@ -857,7 +813,7 @@ async def generic_button_handler(update: Update, context: ContextTypes.DEFAULT_T
             buffer, caption = criar_relatorio_comparativo(
                 df_atual, df_anterior, hoje.month, hoje.year, mes_anterior, ano_anterior)
             await context.bot.send_photo(chat_id=query.message.chat_id,
-                                       photo=buffer, caption=caption, parse_mode='Markdown')
+                                         photo=buffer, caption=caption, parse_mode='Markdown')
         else:
             detalhado = (tipo_relatorio == 'detalhado')
             hoje = get_brazil_now()
@@ -898,7 +854,7 @@ async def generic_button_handler(update: Update, context: ContextTypes.DEFAULT_T
                     for _, row in df_despesas.sort_values(by='total', ascending=False).iterrows():
                         caption += f"💸 {row['categoria']}: {format_brl(row['total'])}\n"
                 await context.bot.send_photo(chat_id=query.message.chat_id,
-                                           photo=buffer, caption=caption, parse_mode='Markdown')
+                                             photo=buffer, caption=caption, parse_mode='Markdown')
         await query.delete_message()
         await show_main_menu(update, context)
 
@@ -921,7 +877,7 @@ async def generic_button_handler(update: Update, context: ContextTypes.DEFAULT_T
     elif data == "orc_definir":
         categorias = get_categorias('despesa')
         keyboard = [[InlineKeyboardButton(f"{icone} {nome}", callback_data=f"orc_cat_{nome}")] 
-                   for nome, icone in categorias]
+                    for nome, icone in categorias]
         keyboard.append([InlineKeyboardButton("⬅️ Voltar", callback_data="orcamentos")])
         await query.edit_message_text(
             "Definir orçamento para qual categoria?",
@@ -959,7 +915,7 @@ async def generic_button_handler(update: Update, context: ContextTypes.DEFAULT_T
             texto += f"Sobra: {format_brl(disponivel)}\n\n"
             keyboard.append([
                 InlineKeyboardButton(f"Ver Gastos de {categoria}", 
-                                   callback_data=f"orc_gastos_{categoria}")
+                                     callback_data=f"orc_gastos_{categoria}")
             ])
         keyboard.append([InlineKeyboardButton("⬅️ Voltar", callback_data="orcamentos")])
         await query.edit_message_text(
@@ -1054,7 +1010,7 @@ async def generic_button_handler(update: Update, context: ContextTypes.DEFAULT_T
             
             categorias = get_categorias(tipo_tx)
             keyboard = [[InlineKeyboardButton(f"{icone} {nome}", callback_data=f"edit_cat_select_{nome}")] 
-                       for nome, icone in categorias]
+                        for nome, icone in categorias]
             keyboard.append([InlineKeyboardButton("❌ Cancelar", callback_data="extrato")])
             
             await query.edit_message_text(
@@ -1111,7 +1067,7 @@ async def data_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         if message_id_to_edit:
             try:
                 await context.bot.delete_message(chat_id=query.message.chat_id,
-                                               message_id=message_id_to_edit)
+                                                 message_id=message_id_to_edit)
             except Exception:
                 pass
 
@@ -1189,7 +1145,8 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if step == 'descricao_transacao':
-        required_keys = ['tipo_transacao', 'categoria_transacao', 'valor_transacao', 'data_transacao', 'data_insercao']
+        required_keys = ['tipo_transacao', 'categoria_transacao', 'valor_transacao', 'data_transacao']
+        # 'data_insercao' não é estritamente necessária para a transação, então removemos ela da checagem rigorosa
         if not all(key in context.user_data for key in required_keys):
             logging.error(f"Estado inválido em 'descricao_transacao'. Dados: {context.user_data}")
             await context.bot.send_message(
@@ -1208,10 +1165,10 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
 
         tx_id = add_transacao(str(user_id), context.user_data['tipo_transacao'],
-                            context.user_data['categoria_transacao'],
-                            context.user_data['valor_transacao'],
-                            descricao,
-                            context.user_data['data_transacao'])
+                              context.user_data['categoria_transacao'],
+                              context.user_data['valor_transacao'],
+                              descricao,
+                              context.user_data['data_transacao'])
 
         sent_message_id = await send_or_edit_summary(context, chat_id, tx_id)
 
@@ -1340,6 +1297,7 @@ async def post_init(application: Application):
 
 
 def run_bot():
+    """Função para rodar o bot do Telegram"""
     application = Application.builder().token(TOKEN).post_init(post_init).build()
 
     application.add_handler(CommandHandler("start", start_command))
@@ -1347,6 +1305,8 @@ def run_bot():
     application.add_handler(
         CommandHandler(["gastou", "ganhou", "saldo", "relatorio", "orcamento"], command_handler))
 
+    # Handlers para botões
+    # O padrão do CallbackQueryHandler para generic_button_handler não inclui mais "subcat_"
     application.add_handler(
         CallbackQueryHandler(data_button_handler, pattern="^(data_manual|data_).+"))
     application.add_handler(
@@ -1354,22 +1314,26 @@ def run_bot():
     application.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
 
-    print("🤖 Bot assistente financeiro v13.5 (CORRIGIDO) iniciado!")
+    print("🤖 Bot assistente financeiro v13.6 (Fluxo simplificado) iniciado!")
     application.run_polling()
 
 
 def run_web_server():
+    """Função para rodar o servidor web Flask"""
     port = int(os.environ.get('PORT', 5000))
     print(f"🌐 Servidor web iniciado na porta {port}")
     app.run(host='0.0.0.0', port=port, debug=False)
 
 
 def main():
+    """Função principal que inicia tanto o bot quanto o servidor web"""
     print("🚀 Iniciando aplicação híbrida (Bot + Servidor Web)...")
 
+    # Inicia o servidor web em uma thread separada
     web_thread = threading.Thread(target=run_web_server, daemon=True)
     web_thread.start()
 
+    # Inicia o banco de dados
     try:
         init_database()
         setup_database()
@@ -1378,6 +1342,7 @@ def main():
         print(f"❌ Erro ao inicializar banco de dados: {e}")
         return
 
+    # Inicia o bot na thread principal
     run_bot()
 
 
