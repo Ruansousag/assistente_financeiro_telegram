@@ -161,7 +161,7 @@ def setup_database():
             ('Educação', 'despesa', '📚'),
             ('Diversos', 'ambos', '📦'),
             
-            # NOVAS SUBCATEGORIAS para DESPESA (Marcadas para fácil filtragem, mas são tratadas como categorias finais)
+            # NOVAS SUBCATEGORIAS para DESPESA (Prefixadas para fácil filtragem)
             ('Sub_Card - Lanches', 'despesa', '🍔'),
             ('Sub_Card - Gasolina', 'despesa', '⛽'),
             ('Sub_Card - Padaria', 'despesa', '🥐'),
@@ -754,7 +754,7 @@ async def generic_button_handler(update: Update, context: ContextTypes.DEFAULT_T
         categoria_principal = data[4:]
         tipo_transacao = context.user_data['tipo_transacao']
 
-        # LÓGICA DE SUBCATEGORIA DE CARTÃO (Recriada e simplificada)
+        # LÓGICA DE SUBCATEGORIA DE CARTÃO
         if tipo_transacao == 'despesa' and ('CARTÃO' in categoria_principal.upper() or 'CARTAO' in categoria_principal.upper()):
             
             # Busca as subcategorias (filtrando pelo prefixo Sub_Card -)
@@ -773,11 +773,12 @@ async def generic_button_handler(update: Update, context: ContextTypes.DEFAULT_T
                     # Exibe apenas a subcategoria (ex: 'Lanches')
                     nome_curto = nome_completo.split(' - ')[1] 
                     # O callback_data final é o NOME CURTO (ex: 'Lanches')
-                    keyboard.append([InlineKeyboardButton(f"{icone} {nome_curto}", 
-                                                         callback_data=f"subcat_{nome_curto}")]) 
+                    keyboard.append([InlineKeyboardButton(f"{icone} {nome_curto}",
+                                                         callback_data=f"subcat_{nome_curto}")]
+                                  ) 
                 
                 # Adiciona opção para pular
-                keyboard.append([InlineKeyboardButton(f"➡️ Usar Categoria Principal ({categoria_principal})", 
+                keyboard.append([InlineKeyboardButton(f"➡️ Usar Categoria Principal ({categoria_principal})",
                                                      callback_data=f"subcat_pular")]) 
                 keyboard.append([InlineKeyboardButton("⬅️ Voltar às Categorias", callback_data=f"add_{tipo_transacao}")])
                 
