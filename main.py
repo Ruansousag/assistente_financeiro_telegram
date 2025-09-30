@@ -159,9 +159,6 @@ def setup_database():
             ('Transporte', 'despesa', '🚗'),
             ('Educação', 'despesa', '📚'),
             ('Diversos', 'ambos', '📦'),
-            
-            # Subcategorias de cartão removidas daqui
-            # Apenas as categorias principais são mantidas
         ]
         
         for categoria in categorias_default:
@@ -412,7 +409,7 @@ def status():
         'status': 'online',
         'bot': 'financial_assistant',
         'timestamp': datetime.now().isoformat(),
-        'version': '13.6' # Versão atualizada para refletir a limpeza do código
+        'version': '13.7' # Versão atualizada para refletir a correção final
     })
 
 @app.route('/health')
@@ -737,9 +734,7 @@ async def generic_button_handler(update: Update, context: ContextTypes.DEFAULT_T
     elif data.startswith("cat_"):
         categoria_principal = data[4:]
         
-        # Lógica de subcategoria removida. O fluxo agora segue o PADRÃO:
-        
-        # LÓGICA PADRÃO: Vai direto para a inserção do valor
+        # LÓGICA PADRÃO (Simplificada sem subcategorias)
         context.user_data['message_id_to_edit'] = query.message.message_id
         context.user_data['categoria_transacao'] = categoria_principal
         context.user_data['step'] = 'valor_transacao'
@@ -747,7 +742,7 @@ async def generic_button_handler(update: Update, context: ContextTypes.DEFAULT_T
             f"Categoria: *{categoria_principal}*\n\nQual o valor?",
             parse_mode='Markdown')
 
-    # Bloco 'elif data.startswith("subcat_")' removido
+    # Removido: elif data.startswith("subcat_"):
 
     elif data == "saldo":
         hoje = get_brazil_now()
@@ -942,6 +937,15 @@ async def generic_button_handler(update: Update, context: ContextTypes.DEFAULT_T
             reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode='Markdown')
 
+    # NOVO: Processa o cancelamento de edição ou reexibição do resumo
+    elif data.startswith("show_tx_"):
+        tx_id = int(data.split("_")[-1])
+        # Re-exibe o resumo da transação, mantendo o ID da mensagem para edição
+        await send_or_edit_summary(context, query.message.chat_id, tx_id, query.message.message_id)
+        # O answer é importante para remover o relógio de carregamento do botão
+        await query.answer(text="Edição cancelada.")
+        return
+
     elif data.startswith("edit_tx_"):
         tx_id = int(data.split("_")[-1])
         tx = get_transacao(tx_id)
@@ -973,7 +977,7 @@ async def generic_button_handler(update: Update, context: ContextTypes.DEFAULT_T
             [InlineKeyboardButton("💰 Mudar Valor", callback_data=f"edit_campo_valor_{_id}")],
             [InlineKeyboardButton("🏷️ Mudar Categoria", callback_data=f"edit_campo_categoria_{_id}")],
             [InlineKeyboardButton("📝 Mudar Descrição", callback_data=f"edit_campo_descricao_{_id}")],
-            [InlineKeyboardButton("❌ Cancelar Edição", callback_data="extrato")]
+            [InlineKeyboardButton("❌ Cancelar Edição", callback_data=f"show_tx_{_id}")] # CORRIGIDO AQUI: Volta para o resumo original
         ])
 
         await query.edit_message_text(
@@ -991,17 +995,22 @@ async def generic_button_handler(update: Update, context: ContextTypes.DEFAULT_T
         context.user_data['edit_tx_id'] = tx_id
         context.user_data['message_id_to_edit'] = message_id_to_edit
         
+        # O botão Cancelar volta para o menu de edição da transação (edit_tx_ID)
+        cancel_keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancelar", callback_data=f"edit_tx_{tx_id}")]])
+
         if campo == 'valor':
             context.user_data['step'] = 'editar_valor_transacao'
             await query.edit_message_text(
                 text="👉 Envie o *novo valor* (ex: 150,50):",
-                parse_mode='Markdown')
+                parse_mode='Markdown',
+                reply_markup=cancel_keyboard) # CORRIGIDO AQUI
 
         elif campo == 'descricao':
             context.user_data['step'] = 'editar_descricao_transacao'
             await query.edit_message_text(
                 text="👉 Envie a *nova descrição*:",
-                parse_mode='Markdown')
+                parse_mode='Markdown',
+                reply_markup=cancel_keyboard) # CORRIGIDO AQUI
 
         elif campo == 'categoria':
             context.user_data['step'] = 'editar_categoria_transacao'
@@ -1011,7 +1020,7 @@ async def generic_button_handler(update: Update, context: ContextTypes.DEFAULT_T
             categorias = get_categorias(tipo_tx)
             keyboard = [[InlineKeyboardButton(f"{icone} {nome}", callback_data=f"edit_cat_select_{nome}")] 
                         for nome, icone in categorias]
-            keyboard.append([InlineKeyboardButton("❌ Cancelar", callback_data="extrato")])
+            keyboard.append([InlineKeyboardButton("❌ Cancelar", callback_data=f"edit_tx_{tx_id}")]) # CORRIGIDO AQUI
             
             await query.edit_message_text(
                 f"Selecione a *nova categoria*:",
@@ -1033,7 +1042,7 @@ async def generic_button_handler(update: Update, context: ContextTypes.DEFAULT_T
                 await query.edit_message_text(
                     "❌ Falha ao atualizar a categoria. Tente novamente.",
                     reply_markup=InlineKeyboardMarkup([[
-                        InlineKeyboardButton("❌ Cancelar", callback_data="extrato")
+                        InlineKeyboardButton("❌ Cancelar", callback_data=f"edit_tx_{tx_id}") # Volta para menu de edição
                     ]]))
             
             context.user_data.clear()
@@ -1146,7 +1155,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if step == 'descricao_transacao':
         required_keys = ['tipo_transacao', 'categoria_transacao', 'valor_transacao', 'data_transacao']
-        # 'data_insercao' não é estritamente necessária para a transação, então removemos ela da checagem rigorosa
         if not all(key in context.user_data for key in required_keys):
             logging.error(f"Estado inválido em 'descricao_transacao'. Dados: {context.user_data}")
             await context.bot.send_message(
@@ -1249,7 +1257,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 chat_id=chat_id,
                 text="❌ Valor inválido. Tente novamente (ex: 150,50) ou toque para cancelar.",
                 reply_markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton("❌ Cancelar", callback_data="extrato")
+                    InlineKeyboardButton("❌ Cancelar", callback_data=f"edit_tx_{context.user_data.get('edit_tx_id')}")
                 ]]))
         return
 
@@ -1272,7 +1280,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 chat_id=chat_id,
                 text="❌ Falha ao atualizar a descrição. Tente novamente.",
                 reply_markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton("❌ Cancelar", callback_data="extrato")
+                    InlineKeyboardButton("❌ Cancelar", callback_data=f"edit_tx_{tx_id}")
                 ]]))
                 
         context.user_data.clear()
@@ -1305,8 +1313,6 @@ def run_bot():
     application.add_handler(
         CommandHandler(["gastou", "ganhou", "saldo", "relatorio", "orcamento"], command_handler))
 
-    # Handlers para botões
-    # O padrão do CallbackQueryHandler para generic_button_handler não inclui mais "subcat_"
     application.add_handler(
         CallbackQueryHandler(data_button_handler, pattern="^(data_manual|data_).+"))
     application.add_handler(
@@ -1314,7 +1320,7 @@ def run_bot():
     application.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
 
-    print("🤖 Bot assistente financeiro v13.6 (Fluxo simplificado) iniciado!")
+    print("🤖 Bot assistente financeiro v13.7 (Fluxo de edição corrigido) iniciado!")
     application.run_polling()
 
 
