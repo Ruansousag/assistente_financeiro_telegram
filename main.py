@@ -815,7 +815,7 @@ async def generic_button_handler(update: Update, context: ContextTypes.DEFAULT_T
                     f"Categoria Principal: *{categoria_principal}*\n\nSelecione o *tipo de gasto* no cartão:",
                     reply_markup=InlineKeyboardMarkup(keyboard),
                     parse_mode='Markdown')
-                return # IMPORTANTE: Retorna aqui para não prosseguir para o passo 'valor_transacao'
+                return # CORREÇÃO CRÍTICA: Retorna aqui para não prosseguir para o passo 'valor_transacao'
         
         # LÓGICA PADRÃO (Se não for cartão ou se pular)
         context.user_data['message_id_to_edit'] = query.message.message_id
