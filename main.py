@@ -424,7 +424,7 @@ def status():
         'status': 'online',
         'bot': 'financial_assistant',
         'timestamp': datetime.now().isoformat(),
-        'version': '13.9'
+        'version': '14.0' # Versão atualizada para refletir a correção do fluxo e o bug U+00A0
     })
 
 @app.route('/health')
@@ -764,7 +764,7 @@ async def generic_button_handler(update: Update, context: ContextTypes.DEFAULT_T
             )
             
             if subcategorias_raw:
-                # Salva o estado principal
+                # Salva o estado principal para uso no próximo callback (subcat_)
                 context.user_data['message_id_to_edit'] = query.message.message_id 
                 context.user_data['categoria_principal_cartao'] = categoria_principal # Guarda Cartão NUBANK
                 
@@ -1454,7 +1454,7 @@ def run_bot():
     application.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
 
-    print("🤖 Bot assistente financeiro v13.9 (Exclusão e Edição de Mensagem Corrigidos) iniciado!")
+    print("🤖 Bot assistente financeiro v14.0 (Fluxo Subcategoria Corrigido) iniciado!")
     application.run_polling()
 
 
