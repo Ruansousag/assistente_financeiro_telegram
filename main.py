@@ -424,7 +424,7 @@ def status():
         'status': 'online',
         'bot': 'financial_assistant',
         'timestamp': datetime.now().isoformat(),
-        'version': '14.0' # Versão atualizada para refletir a correção do fluxo e o bug U+00A0
+        'version': '14.1'
     })
 
 @app.route('/health')
@@ -739,7 +739,7 @@ async def generic_button_handler(update: Update, context: ContextTypes.DEFAULT_T
 
     if data in ["add_despesa", "add_receita"]:
         tipo = data.split('_')[1]
-        context.user_data.clear()
+        context.user_data.clear() # Limpa o contexto AQUI (início do fluxo)
         context.user_data['tipo_transacao'] = tipo
         categories = get_categorias(tipo) # Retorna apenas as categorias principais
         keyboard = [[InlineKeyboardButton(f"{icone} {nome}", callback_data=f"cat_{nome}")] 
@@ -752,7 +752,7 @@ async def generic_button_handler(update: Update, context: ContextTypes.DEFAULT_T
 
     elif data.startswith("cat_"):
         categoria_principal = data[4:]
-        tipo_transacao = context.user_data['tipo_transacao']
+        tipo_transacao = context.user_data.get('tipo_transacao') # Corrigido para .get() para evitar KeyErrors
 
         # LÓGICA DE SUBCATEGORIA DE CARTÃO
         if tipo_transacao == 'despesa' and ('CARTÃO' in categoria_principal.upper() or 'CARTAO' in categoria_principal.upper()):
@@ -787,7 +787,7 @@ async def generic_button_handler(update: Update, context: ContextTypes.DEFAULT_T
                     reply_markup=InlineKeyboardMarkup(keyboard),
                     parse_mode='Markdown')
                 
-                return # Interrompe e espera a escolha da subcategoria
+                return # **ESSENCIAL:** Interrompe AQUI para esperar o menu de subcategoria.
         
         # LÓGICA PADRÃO (Se não for cartão ou se não tiver subcategorias)
         context.user_data['message_id_to_edit'] = query.message.message_id
@@ -1454,7 +1454,7 @@ def run_bot():
     application.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
 
-    print("🤖 Bot assistente financeiro v14.0 (Fluxo Subcategoria Corrigido) iniciado!")
+    print("🤖 Bot assistente financeiro v14.1 (Fluxo Subcategoria Corrigido) iniciado!")
     application.run_polling()
 
 
