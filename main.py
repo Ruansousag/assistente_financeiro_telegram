@@ -314,7 +314,7 @@ meses = {
 
 # CONFIGURAÇÕES DO BOT
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-AUTHORIZED_USERS = os.getenv("AUTHORIZED_USERS", "").split(',')
+AUTHORIZED_USERS = [id.strip() for id in os.getenv("AUTHORIZED_USERS", "").split(',')]
 
 # Define o fuso horário do Brasil
 BRAZIL_TZ = pytz.timezone('America/Sao_Paulo')
@@ -1223,3 +1223,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
