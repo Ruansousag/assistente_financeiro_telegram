@@ -152,7 +152,6 @@ def setup_database():
             ('Apto', 'despesa', '🏠'),
             ('Aluguel', 'despesa', '🏘️'),
             ('Lazer', 'despesa', '🎉'),
-            # Categorias de Cartão
             ('Cartão NUBANK', 'despesa', '💳'),
             ('Cartão BRB', 'despesa', '💳'),
             ('Cartão CAIXA', 'despesa', '💳'),
@@ -160,15 +159,6 @@ def setup_database():
             ('Transporte', 'despesa', '🚗'),
             ('Educação', 'despesa', '📚'),
             ('Diversos', 'ambos', '📦'),
-            
-            # NOVAS SUBCATEGORIAS para DESPESA (Prefixadas para fácil filtragem)
-            ('Sub_Card - Lanches', 'despesa', '🍔'),
-            ('Sub_Card - Gasolina', 'despesa', '⛽'),
-            ('Sub_Card - Padaria', 'despesa', '🥐'),
-            ('Sub_Card - Passagem', 'despesa', '🚌'),
-            ('Sub_Card - Mercado', 'despesa', '🛒'),
-            ('Sub_Card - Streaming', 'despesa', '📺'),
-            ('Sub_Card - Lazer', 'despesa', '🎉'),
         ]
         
         for categoria in categorias_default:
@@ -183,8 +173,7 @@ def zerar_dados():
 
 def get_categorias(tipo=None):
     if tipo:
-        # Filtra categorias que não são subcategorias de cartão (as Sub_Card - são apenas para o fluxo)
-        query = "SELECT nome, icone FROM categorias WHERE (tipo = %s OR tipo = 'ambos') AND nome NOT LIKE 'Sub_Card - %%' ORDER BY nome"
+        query = "SELECT nome, icone FROM categorias WHERE tipo = %s OR tipo = 'ambos' ORDER BY nome"
         return execute_with_retry(query, (tipo,), fetch=True)
     else:
         query = "SELECT nome, icone FROM categorias ORDER BY nome"
@@ -424,7 +413,7 @@ def status():
         'status': 'online',
         'bot': 'financial_assistant',
         'timestamp': datetime.now().isoformat(),
-        'version': '14.1'
+        'version': '13.9' # Versão atualizada para refletir a nova funcionalidade
     })
 
 @app.route('/health')
@@ -739,11 +728,11 @@ async def generic_button_handler(update: Update, context: ContextTypes.DEFAULT_T
 
     if data in ["add_despesa", "add_receita"]:
         tipo = data.split('_')[1]
-        context.user_data.clear() # Limpa o contexto AQUI (início do fluxo)
+        context.user_data.clear()
         context.user_data['tipo_transacao'] = tipo
-        categories = get_categorias(tipo) # Retorna apenas as categorias principais
+        categorias = get_categorias(tipo)
         keyboard = [[InlineKeyboardButton(f"{icone} {nome}", callback_data=f"cat_{nome}")] 
-                    for nome, icone in categories]
+                    for nome, icone in categorias]
         keyboard.append([InlineKeyboardButton("⬅️ Voltar ao Menu", callback_data="menu_principal")])
         await query.edit_message_text(
             f"Selecione a categoria da *{tipo}*:",
@@ -752,73 +741,13 @@ async def generic_button_handler(update: Update, context: ContextTypes.DEFAULT_T
 
     elif data.startswith("cat_"):
         categoria_principal = data[4:]
-        tipo_transacao = context.user_data.get('tipo_transacao') # Corrigido para .get() para evitar KeyErrors
-
-        # LÓGICA DE SUBCATEGORIA DE CARTÃO
-        if tipo_transacao == 'despesa' and ('CARTÃO' in categoria_principal.upper() or 'CARTAO' in categoria_principal.upper()):
-            
-            # Busca as subcategorias (filtrando pelo prefixo Sub_Card -)
-            subcategorias_raw = execute_with_retry(
-                "SELECT nome, icone FROM categorias WHERE nome LIKE 'Sub_Card - %%' ORDER BY nome",
-                fetch=True
-            )
-            
-            if subcategorias_raw:
-                # Salva o estado principal para uso no próximo callback (subcat_)
-                context.user_data['message_id_to_edit'] = query.message.message_id 
-                context.user_data['categoria_principal_cartao'] = categoria_principal # Guarda Cartão NUBANK
-                
-                keyboard = []
-                for nome_completo, icone in subcategorias_raw:
-                    # Exibe apenas a subcategoria (ex: 'Lanches')
-                    nome_curto = nome_completo.split(' - ')[1] 
-                    # O callback_data final é o NOME CURTO (ex: 'Lanches')
-                    keyboard.append([InlineKeyboardButton(f"{icone} {nome_curto}",
-                                                         callback_data=f"subcat_{nome_curto}")]
-                                  ) 
-                
-                # Adiciona opção para pular
-                keyboard.append([InlineKeyboardButton(f"➡️ Usar Categoria Principal ({categoria_principal})",
-                                                     callback_data=f"subcat_pular")]) 
-                keyboard.append([InlineKeyboardButton("⬅️ Voltar às Categorias", callback_data=f"add_{tipo_transacao}")])
-                
-                await query.edit_message_text(
-                    f"Categoria Principal: *{categoria_principal}*\n\nSelecione a *Subcategoria*:",
-                    reply_markup=InlineKeyboardMarkup(keyboard),
-                    parse_mode='Markdown')
-                
-                return # **ESSENCIAL:** Interrompe AQUI para esperar o menu de subcategoria.
         
-        # LÓGICA PADRÃO (Se não for cartão ou se não tiver subcategorias)
+        # LÓGICA PADRÃO (Simplificada sem subcategorias)
         context.user_data['message_id_to_edit'] = query.message.message_id
         context.user_data['categoria_transacao'] = categoria_principal
         context.user_data['step'] = 'valor_transacao'
         await query.edit_message_text(
             f"Categoria: *{categoria_principal}*\n\nQual o valor?",
-            parse_mode='Markdown')
-
-    elif data.startswith("subcat_"):
-        partes = data.split('_')
-        
-        message_id_to_edit = context.user_data.get('message_id_to_edit', query.message.message_id)
-        
-        if partes[1] == 'pular':
-            # Usa a categoria principal salva no contexto
-            categoria_final = context.user_data.get('categoria_principal_cartao', 'Cartão (Erro)')
-        else:
-            # Usa o nome da subcategoria (ex: 'Lanches')
-            categoria_final = data[len("subcat_"):]
-        
-        # Limpa e configura o próximo passo
-        tipo_transacao = context.user_data.get('tipo_transacao')
-        context.user_data.clear()
-        context.user_data['message_id_to_edit'] = message_id_to_edit
-        context.user_data['categoria_transacao'] = categoria_final # A categoria final é a subcategoria (ex: 'Lanches')
-        context.user_data['step'] = 'valor_transacao'
-        context.user_data['tipo_transacao'] = tipo_transacao
-        
-        await query.edit_message_text(
-            f"Categoria: *{categoria_final}*\n\nQual o valor?",
             parse_mode='Markdown')
 
     elif data == "saldo":
@@ -1050,11 +979,11 @@ async def generic_button_handler(update: Update, context: ContextTypes.DEFAULT_T
         )
 
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("💰 Mudar Valor", callback_data=f"edit_campo_valor_{_id}"),
-             InlineKeyboardButton("🗑️ Excluir Transação", callback_data=f"confirm_delete_{_id}")],
+            [InlineKeyboardButton("💰 Mudar Valor", callback_data=f"edit_campo_valor_{_id}")],
             [InlineKeyboardButton("🏷️ Mudar Categoria", callback_data=f"edit_campo_categoria_{_id}")],
             [InlineKeyboardButton("📝 Mudar Descrição", callback_data=f"edit_campo_descricao_{_id}")],
-            [InlineKeyboardButton("❌ Cancelar Edição", callback_data=f"show_tx_{_id}")] 
+            [InlineKeyboardButton("❌ Cancelar Edição", callback_data=f"show_tx_{_id}")],
+            [InlineKeyboardButton("🗑️ Excluir Transação", callback_data=f"confirm_delete_{_id}")] # NOVO BOTÃO
         ])
 
         await query.edit_message_text(
@@ -1062,7 +991,7 @@ async def generic_button_handler(update: Update, context: ContextTypes.DEFAULT_T
             reply_markup=keyboard,
             parse_mode='Markdown')
 
-    # Confirmação de Exclusão
+    # Confirmação de Exclusão (NOVO BLOCO)
     elif data.startswith("confirm_delete_"):
         tx_id = int(data.split("_")[-1])
         tx = get_transacao(tx_id)
@@ -1093,7 +1022,7 @@ async def generic_button_handler(update: Update, context: ContextTypes.DEFAULT_T
             parse_mode='Markdown'
         )
 
-    # Execução da Exclusão
+    # Execução da Exclusão (NOVO BLOCO)
     elif data.startswith("delete_tx_"):
         tx_id = int(data.split("_")[-1])
         
@@ -1454,7 +1383,7 @@ def run_bot():
     application.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
 
-    print("🤖 Bot assistente financeiro v14.1 (Fluxo Subcategoria Corrigido) iniciado!")
+    print("🤖 Bot assistente financeiro v13.9 (Exclusão e Edição de Mensagem Corrigidos) iniciado!")
     application.run_polling()
 
 
