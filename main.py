@@ -27,12 +27,13 @@ logging.basicConfig(
 
 # --- SUBCATEGORIAS E CARTÕES ESPECIAIS ---
 SUBCATEGORIAS_CARTAO = [
-    "LANCHES",
-    "GASOLINA",
-    "STREAMING",
-    "PASSAGEM",
-    "LAZER",
-    "MERCADO"
+    "LANCHES 🍟",
+    "GASOLINA 🚗",
+    "STREAMING 📺",
+    "PASSAGEM 🚍",
+    "LAZER 🎉",
+    "MERCADO 🛒",
+    "PLANO CELULARES 📱"
 ]
 
 CARTOES_ESPECIAIS = [
@@ -164,16 +165,13 @@ def setup_database():
             ('Salário', 'receita', '💰'),
             ('Freelance', 'receita', '💻'),
             ('Investimentos', 'receita', '📈'),
-            ('Mercado', 'despesa', '🛒'),
             ('Saúde', 'despesa', '🏥'),
             ('Apto', 'despesa', '🏠'),
             ('Aluguel', 'despesa', '🏘️'),
-            ('Lazer', 'despesa', '🎉'),
             ('Cartão NUBANK', 'despesa', '💳'),
             ('Cartão BRB', 'despesa', '💳'),
             ('Cartão CAIXA', 'despesa', '💳'),
             ('Cartão CVC', 'despesa', '💳'),
-            ('Transporte', 'despesa', '🚗'),
             ('Educação', 'despesa', '📚'),
             ('Diversos', 'ambos', '📦'),
         ]
@@ -1546,3 +1544,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
