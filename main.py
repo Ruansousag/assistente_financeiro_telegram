@@ -756,8 +756,8 @@ async def generic_button_handler(update: Update, context: ContextTypes.DEFAULT_T
             parse_mode='Markdown')
 
     elif data.startswith("cat_"):
-    categoria_principal = data[4:]
-    context.user_data["message_id_to_edit"] = query.message.message_id
+        categoria_principal = data[4:]
+        context.user_data["message_id_to_edit"] = query.message.message_id
 
     if categoria_principal in CARTOES_ESPECIAIS:
         context.user_data["categoriaprincipal"] = categoria_principal
@@ -1461,4 +1461,5 @@ def main():
 
 if __name__ == '__main__':
     main()
+
 
