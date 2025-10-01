@@ -160,6 +160,22 @@ def setup_database():
             ('Educação', 'despesa', '📚'),
             ('Diversos', 'ambos', '📦'),
         ]
+
+        SUBCATEGORIAS_CARTAO = [
+            "LANCHES",
+            "GASOLINA",
+            "STREAMING",
+            "PASSAGEM",
+            "LAZER",
+            "MERCADO"
+        ]
+
+        CARTOES_ESPECIAIS = [
+            "Cartão NUBANK",
+            "Cartão CAIXA",
+            "Cartão CVC",
+            "Cartão BRB"
+        ]
         
         for categoria in categorias_default:
             execute_with_retry(
@@ -740,15 +756,43 @@ async def generic_button_handler(update: Update, context: ContextTypes.DEFAULT_T
             parse_mode='Markdown')
 
     elif data.startswith("cat_"):
-        categoria_principal = data[4:]
-        
-        # LÓGICA PADRÃO (Simplificada sem subcategorias)
-        context.user_data['message_id_to_edit'] = query.message.message_id
-        context.user_data['categoria_transacao'] = categoria_principal
-        context.user_data['step'] = 'valor_transacao'
+    categoria_principal = data[4:]
+    context.user_data["message_id_to_edit"] = query.message.message_id
+
+    if categoria_principal in CARTOES_ESPECIAIS:
+        context.user_data["categoriaprincipal"] = categoria_principal
+        context.user_data["step"] = "subcategoria"
+        keyboard = [
+            [InlineKeyboardButton(sub, callback_data=f"subcat_{sub}")]
+            for sub in SUBCATEGORIAS_CARTAO
+        ]
+        keyboard.append([InlineKeyboardButton("Voltar", callback_data="menu_principal")])
         await query.edit_message_text(
-            f"Categoria: *{categoria_principal}*\n\nQual o valor?",
-            parse_mode='Markdown')
+            f"Selecione uma subcategoria para {categoria_principal}:",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode='Markdown'
+        )
+        return
+
+    context.user_data["categoria_transacao"] = categoria_principal
+    context.user_data["step"] = "valor_transacao"
+    await query.edit_message_text(
+        f"Categoria: *{categoria_principal}*\n\nQual o valor?",
+        parse_mode='Markdown'
+    )
+    return
+
+    elif data.startswith("subcat_"):
+    subcategoria = data.split("_", 1)[1]
+    categoriaprincipal = context.user_data.get("categoriaprincipal", "")
+    categoria_final = f"{categoriaprincipal} - {subcategoria}"
+    context.user_data["categoria_transacao"] = categoria_final
+    context.user_data["step"] = "valor_transacao"
+    await query.edit_message_text(
+        f"Categoria escolhida: {categoria_final}\nQual o valor?",
+        parse_mode='Markdown'
+    )
+    return
 
     elif data == "saldo":
         hoje = get_brazil_now()
@@ -1417,3 +1461,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
