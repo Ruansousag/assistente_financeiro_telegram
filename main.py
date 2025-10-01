@@ -739,25 +739,27 @@ async def generic_button_handler(update: Update, context: ContextTypes.DEFAULT_T
     data = query.data
 
     if data == "menu_principal":
-        await show_main_menu(update, context, message_id=query.message.message_id)
-        return
+    await show_main_menu(update, context, message_id=query.message.message_id)
+    return
 
-    if data in ["add_despesa", "add_receita"]:
-        tipo = data.split('_')[1]
-        context.user_data.clear()
-        context.user_data['tipo_transacao'] = tipo
-        categorias = get_categorias(tipo)
-        keyboard = [[InlineKeyboardButton(f"{icone} {nome}", callback_data=f"cat_{nome}")] 
-                    for nome, icone in categorias]
-        keyboard.append([InlineKeyboardButton("⬅️ Voltar ao Menu", callback_data="menu_principal")])
-        await query.edit_message_text(
-            f"Selecione a categoria da *{tipo}*:",
-            reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode='Markdown')
+elif data in ["add_despesa", "add_receita"]:
+    tipo = data.split('_')[1]
+    context.user_data.clear()
+    context.user_data['tipo_transacao'] = tipo
+    categorias = get_categorias(tipo)
+    keyboard = [[InlineKeyboardButton(f"{icone} {nome}", callback_data=f"cat_{nome}")] 
+                for nome, icone in categorias]
+    keyboard.append([InlineKeyboardButton("⬅️ Voltar ao Menu", callback_data="menu_principal")])
+    await query.edit_message_text(
+        f"Selecione a categoria da *{tipo}*:",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode='Markdown'
+    )
+    return
 
-    elif data.startswith("cat_"):
-        categoria_principal = data[4:]
-        context.user_data["message_id_to_edit"] = query.message.message_id
+elif data.startswith("cat_"):
+    categoria_principal = data[4:]
+    context.user_data["message_id_to_edit"] = query.message.message_id
 
     if categoria_principal in CARTOES_ESPECIAIS:
         context.user_data["categoriaprincipal"] = categoria_principal
@@ -782,7 +784,7 @@ async def generic_button_handler(update: Update, context: ContextTypes.DEFAULT_T
     )
     return
 
-    elif data.startswith("subcat_"):
+elif data.startswith("subcat_"):
     subcategoria = data.split("_", 1)[1]
     categoriaprincipal = context.user_data.get("categoriaprincipal", "")
     categoria_final = f"{categoriaprincipal} - {subcategoria}"
@@ -794,17 +796,17 @@ async def generic_button_handler(update: Update, context: ContextTypes.DEFAULT_T
     )
     return
 
-    elif data == "saldo":
-        hoje = get_brazil_now()
-        df = gerar_relatorio_mensal(hoje.month, hoje.year)
-        receitas = df[df['tipo'] == 'receita']['total'].sum() if not df.empty else 0
-        despesas = df[df['tipo'] == 'despesa']['total'].sum() if not df.empty else 0
-        texto = (
-            f"💳 *Saldo de {meses[calendar.month_name[hoje.month]].capitalize()}*\n\n"
-            f"💰 Receitas: {format_brl(receitas)}\n"
-            f"💸 Despesas: {format_brl(despesas)}\n"
-            f"*{'💚 Saldo Positivo' if (receitas - despesas) >= 0 else '❤️ Saldo Negativo'}: {format_brl(receitas - despesas)}*"
-        )
+elif data == "saldo":
+    hoje = get_brazil_now()
+    df = gerar_relatorio_mensal(hoje.month, hoje.year)
+    receitas = df[df['tipo'] == 'receita']['total'].sum() if not df.empty else 0
+    despesas = df[df['tipo'] == 'despesa']['total'].sum() if not df.empty else 0
+    texto = (
+        f"💳 *Saldo de {meses[calendar.month_name[hoje.month]].capitalize()}*\n\n"
+        f"💰 Receitas: {format_brl(receitas)}\n"
+        f"💸 Despesas: {format_brl(despesas)}\n"
+        f"*{'💚 Saldo Positivo' if (receitas - despesas) >= 0 else '❤️ Saldo Negativo'}: {format_brl(receitas - despesas)}*"
+    )
         keyboard = [[InlineKeyboardButton("⬅️ Voltar ao Menu", callback_data="menu_principal")]]
         await query.edit_message_text(
             texto,
@@ -1461,5 +1463,6 @@ def main():
 
 if __name__ == '__main__':
     main()
+
 
 
