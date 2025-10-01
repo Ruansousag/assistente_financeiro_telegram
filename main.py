@@ -224,7 +224,6 @@ def get_orcamento_status(categoria, mes, ano):
     limite = orcamento_result[0][0]
     
     # ATENÇÃO: A busca por despesas no orçamento DEVE AGREGAR as subcategorias de cartão
-    # para corresponder ao orçamento definido na categoria principal (ex: Cartão NUBANK).
     
     # 1. Tenta buscar pelo nome exato (para categorias normais)
     gasto_result_exact = execute_with_retry(
@@ -247,7 +246,6 @@ def get_orcamento_status(categoria, mes, ano):
     percentual_usado = (gasto_atual / limite) * 100 if limite > 0 else 0
     
     return limite, gasto_atual, disponivel, percentual_usado
-
 
 def set_orcamento(categoria, valor_limite, mes, ano):
     query = """
@@ -286,7 +284,6 @@ def get_transacoes_por_categoria(categoria, mes, ano):
         """
         return execute_with_retry(query, (categoria, ano, mes), fetch=True)
 
-# ALTERAÇÃO SOLICITADA IMPLEMENTADA AQUI
 def gerar_relatorio_mensal(mes, ano, detalhado=False):
     global conn
     try:
@@ -304,8 +301,6 @@ def gerar_relatorio_mensal(mes, ano, detalhado=False):
         else:
             # Relatório Resumido: Agrupa subcategorias de cartão na principal
             # Usando uma função SQL para determinar a categoria para agrupamento
-            # COALESCE(NULLIF(SPLIT_PART(categoria, ' - ', 1), ''), categoria)
-            # Tenta pegar a parte antes de ' - ', se falhar (ou for vazio), usa a categoria inteira.
             query = f"""
                 SELECT 
                     COALESCE(
@@ -481,7 +476,7 @@ def status():
         'status': 'online',
         'bot': 'financial_assistant',
         'timestamp': datetime.now().isoformat(),
-        'version': '13.9' # Versão atualizada para refletir a nova funcionalidade
+        'version': '14.0' # Versão atualizada para refletir a nova funcionalidade
     })
 
 @app.route('/health')
@@ -787,6 +782,110 @@ async def zerar_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode='Markdown')
 
+# Nova função para apresentar as opções de mês para o relatório
+async def relatorio_escolha_mes(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    hoje = get_brazil_now()
+    mes_atual_nome = meses[calendar.month_name[hoje.month]].capitalize()
+    
+    ano_anterior, mes_anterior = get_previous_month(hoje.year, hoje.month)
+    mes_anterior_nome = meses[calendar.month_name[mes_anterior]].capitalize()
+
+    # Obtém o tipo de relatório da chamada original (gráfica ou detalhada)
+    report_type = query.data.split('_')[1] # 'grafico' ou 'detalhado'
+    
+    # Armazena o tipo para a próxima etapa (rel_gerar)
+    context.user_data['relatorio_type'] = report_type
+    
+    keyboard = [
+        [
+            InlineKeyboardButton(
+                f"📊 {mes_atual_nome} ({hoje.year})", 
+                callback_data=f"rel_gerar_{hoje.month}_{hoje.year}"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                f"🗓️ {mes_anterior_nome} ({ano_anterior})", 
+                callback_data=f"rel_gerar_{mes_anterior}_{ano_anterior}"
+            )
+        ],
+        [InlineKeyboardButton("⬅️ Voltar", callback_data="relatorios")]
+    ]
+    
+    await query.edit_message_text(
+        f"Selecione o mês para o relatório *{report_type.capitalize()}*:",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode='Markdown'
+    )
+    
+async def relatorio_gerar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    # rel_gerar_mes_ano
+    data_parts = query.data.split('_')
+    mes = int(data_parts[2])
+    ano = int(data_parts[3])
+    
+    tipo_relatorio = context.user_data.get('relatorio_type', 'grafico')
+    detalhado = (tipo_relatorio == 'detalhado')
+    nome_mes_relatorio = f"{meses[calendar.month_name[mes]].capitalize()}/{ano}"
+
+    await query.edit_message_text(f"⏳ Gerando relatório {tipo_relatorio} de {nome_mes_relatorio}, um momento...")
+    
+    df = gerar_relatorio_mensal(mes, ano, detalhado=detalhado)
+    
+    if df.empty:
+        await query.edit_message_text(
+            f"Nenhum dado encontrado para {nome_mes_relatorio}.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("⬅️ Voltar aos Relatórios", callback_data="relatorios")
+            ]]))
+        context.user_data.pop('relatorio_type', None)
+        return
+        
+    if detalhado:
+        # Detalhado: Usa categorias como estão no BD (inclui subcategorias)
+        buffer = criar_relatorio_detalhado(df, mes, ano)
+        await context.bot.send_document(
+            chat_id=query.message.chat_id,
+            document=buffer,
+            filename=f"relatorio_{ano}_{mes:02d}_detalhado.txt",
+            caption=f"Aqui está seu relatório detalhado de {nome_mes_relatorio}!")
+    else:
+        # Gráfico: Usa categorias agregadas (cartão principal)
+        buffer = criar_relatorio_visual(df, mes, ano)
+        receitas = df[df['tipo'] == 'receita']['total'].sum()
+        despesas = df[df['tipo'] == 'despesa']['total'].sum()
+        caption = (
+            f"📊 *Resumo de {nome_mes_relatorio}*\n\n"
+            f"💰 Receitas Totais: {format_brl(receitas)}\n"
+            f"💸 Despesas Totais: {format_brl(despesas)}\n"
+            f"*{'💚 Saldo' if (receitas - despesas) >= 0 else '❤️ Saldo'}: {format_brl(receitas - despesas)}*\n"
+        )
+        # Adiciona a quebra de receitas e despesas
+        df_receitas = df[df['tipo'] == 'receita']
+        if not df_receitas.empty:
+            caption += "\n------ *Receitas* ------\n"
+            for _, row in df_receitas.sort_values(by='total', ascending=False).iterrows():
+                caption += f"💰 {row['categoria']}: {format_brl(row['total'])}\n"
+        df_despesas = df[df['tipo'] == 'despesa']
+        if not df_despesas.empty:
+            caption += "\n------ *Despesas* ------\n"
+            for _, row in df_despesas.sort_values(by='total', ascending=False).iterrows():
+                caption += f"💸 {row['categoria']}: {format_brl(row['total'])}\n"
+        
+        await context.bot.send_photo(chat_id=query.message.chat_id,
+                                     photo=buffer, caption=caption, parse_mode='Markdown')
+
+    await query.delete_message()
+    context.user_data.pop('relatorio_type', None)
+    await show_main_menu(update, context)
+
+
 async def generic_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -797,6 +896,7 @@ async def generic_button_handler(update: Update, context: ContextTypes.DEFAULT_T
         return
 
     elif data in ["add_despesa", "add_receita"]:
+        # ... (Mantém a lógica de adicionar transação) ...
         tipo = data.split('_')[1]
         context.user_data.clear()
         context.user_data['tipo_transacao'] = tipo
@@ -812,10 +912,10 @@ async def generic_button_handler(update: Update, context: ContextTypes.DEFAULT_T
         return
 
     elif data.startswith("cat_"):
+        # ... (Mantém a lógica de escolha de categoria/subcategoria) ...
         categoria_principal = data[4:]
         context.user_data["message_id_to_edit"] = query.message.message_id
 
-        # Verifica se é um dos cartões especiais, exibe subcategorias
         if categoria_principal in CARTOES_ESPECIAIS:
             context.user_data["categoriaprincipal"] = categoria_principal
             context.user_data["step"] = "subcategoria"
@@ -831,7 +931,6 @@ async def generic_button_handler(update: Update, context: ContextTypes.DEFAULT_T
             )
             return
 
-        # Fluxo normal para outras categorias
         context.user_data["categoria_transacao"] = categoria_principal
         context.user_data["step"] = "valor_transacao"
         await query.edit_message_text(
@@ -841,6 +940,7 @@ async def generic_button_handler(update: Update, context: ContextTypes.DEFAULT_T
         return
 
     elif data.startswith("subcat_"):
+        # ... (Mantém a lógica de escolha de subcategoria) ...
         subcategoria = data.split("_", 1)[1]
         categoriaprincipal = context.user_data.get("categoriaprincipal", "")
         categoria_final = f"{categoriaprincipal} - {subcategoria}"
@@ -853,8 +953,8 @@ async def generic_button_handler(update: Update, context: ContextTypes.DEFAULT_T
         return
     
     elif data == "saldo":
+        # ... (Mantém a lógica de saldo) ...
         hoje = get_brazil_now()
-        # Usa gerar_relatorio_mensal(detalhado=False) que agrega subcategorias
         df = gerar_relatorio_mensal(hoje.month, hoje.year)
         receitas = df[df['tipo'] == 'receita']['total'].sum() if not df.empty else 0
         despesas = df[df['tipo'] == 'despesa']['total'].sum() if not df.empty else 0
@@ -871,6 +971,7 @@ async def generic_button_handler(update: Update, context: ContextTypes.DEFAULT_T
             parse_mode='Markdown')
 
     elif data == "extrato":
+        # ... (Mantém a lógica de extrato) ...
         lancamentos = get_ultimos_lancamentos()
         keyboard = [[InlineKeyboardButton("⬅️ Voltar ao Menu", callback_data="menu_principal")]]
         if not lancamentos:
@@ -888,90 +989,74 @@ async def generic_button_handler(update: Update, context: ContextTypes.DEFAULT_T
             parse_mode='Markdown')
 
     elif data == "relatorios":
+        hoje = get_brazil_now()
+        ano_anterior, mes_anterior = get_previous_month(hoje.year, hoje.month)
+        mes_anterior_nome = meses[calendar.month_name[mes_anterior]].capitalize()
+        
         keyboard = [
-            [InlineKeyboardButton("📊 Mês Atual (Gráfico)", callback_data="rel_grafico")],
-            [InlineKeyboardButton("📄 Mês Atual (Detalhado)", callback_data="rel_detalhado")],
-            [InlineKeyboardButton("📈 Comparativo Mensal", callback_data="rel_comparativo")],
-            [InlineKeyboardButton("⬅️ Voltar ao Menu", callback_data="menu_principal")]
+            [
+                InlineKeyboardButton("📊 Mês Atual (Gráfico)", callback_data=f"rel_gerar_{hoje.month}_{hoje.year}_grafico"),
+                InlineKeyboardButton("📄 Mês Atual (Detalhado)", callback_data=f"rel_gerar_{hoje.month}_{hoje.year}_detalhado")
+            ],
+            [
+                # Alterado para chamar a função de escolha de mês
+                InlineKeyboardButton(f"📊 {mes_anterior_nome} (Gráfico)", callback_data=f"rel_gerar_{mes_anterior}_{ano_anterior}_grafico"),
+                InlineKeyboardButton(f"📄 {mes_anterior_nome} (Detalhado)", callback_data=f"rel_gerar_{mes_anterior}_{ano_anterior}_detalhado")
+            ],
+            [
+                InlineKeyboardButton("📈 Comparativo Mensal", callback_data="rel_comparativo")
+            ],
+            [
+                InlineKeyboardButton("⬅️ Voltar ao Menu", callback_data="menu_principal")
+            ]
         ]
+        
         await query.edit_message_text(
             "Qual relatório você deseja gerar?",
             reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode='Markdown')
 
-    elif data.startswith("rel_"):
-        tipo_relatorio = data.split('_')[1]
+    # Altera para o novo padrão de callback_data para geração direta
+    elif data.startswith("rel_gerar_"):
+        # Padrão: rel_gerar_mes_ano_tipo
+        data_parts = data.split('_')
+        mes = int(data_parts[2])
+        ano = int(data_parts[3])
+        tipo = data_parts[4] # 'grafico' ou 'detalhado'
+
+        context.user_data['relatorio_type'] = tipo # Reutiliza a chave existente, mas simplifica o processo
+        context.user_data['relatorio_month'] = mes
+        context.user_data['relatorio_year'] = ano
+
+        # Reutiliza a lógica de geração de relatório, passando os dados do mês/ano/tipo
+        await relatorio_gerar_simples(update, context, mes, ano, tipo)
+
+
+    elif data == "rel_comparativo":
         hoje = get_brazil_now()
-
-        await query.edit_message_text("⏳ Gerando relatório, um momento...")
-
-        if tipo_relatorio == 'comparativo':
-            ano_anterior, mes_anterior = get_previous_month(hoje.year, hoje.month)
-            # Usa gerar_relatorio_mensal(detalhado=False) que agrega subcategorias
-            df_atual = gerar_relatorio_mensal(hoje.month, hoje.year)
-            df_anterior = gerar_relatorio_mensal(mes_anterior, ano_anterior)
-            
-            if df_anterior.empty:
-                await query.edit_message_text(
-                    "Ainda não há dados do mês anterior para comparar.",
-                    reply_markup=InlineKeyboardMarkup([[
-                        InlineKeyboardButton("⬅️ Voltar", callback_data="relatorios")
-                    ]]))
-                return
-                
-            buffer, caption = criar_relatorio_comparativo(
-                df_atual, df_anterior, hoje.month, hoje.year, mes_anterior, ano_anterior)
-            await context.bot.send_photo(chat_id=query.message.chat_id,
-                                         photo=buffer, caption=caption, parse_mode='Markdown')
-            
-        else:
-            detalhado = (tipo_relatorio == 'detalhado')
-            df = gerar_relatorio_mensal(hoje.month, hoje.year, detalhado=detalhado)
-            
-            if df.empty:
-                await query.edit_message_text(
-                    f"Nenhum dado encontrado para {meses[calendar.month_name[hoje.month]].capitalize()}.",
-                    reply_markup=InlineKeyboardMarkup([[
-                        InlineKeyboardButton("⬅️ Voltar", callback_data="relatorios")
-                    ]]))
-                return
-                
-            if detalhado:
-                # Detalhado: Usa categorias como estão no BD (inclui subcategorias)
-                buffer = criar_relatorio_detalhado(df, hoje.month, hoje.year)
-                await context.bot.send_document(
-                    chat_id=query.message.chat_id,
-                    document=buffer,
-                    filename=f"relatorio_{hoje.year}_{hoje.month:02d}.txt",
-                    caption="Aqui está seu relatório detalhado!")
-            else:
-                # Gráfico: Usa categorias agregadas (cartão principal)
-                buffer = criar_relatorio_visual(df, hoje.month, hoje.year)
-                receitas = df[df['tipo'] == 'receita']['total'].sum()
-                despesas = df[df['tipo'] == 'despesa']['total'].sum()
-                caption = (
-                    f"📊 *Resumo de {meses[calendar.month_name[hoje.month]].capitalize()}*\n\n"
-                    f"💰 Receitas Totais: {format_brl(receitas)}\n"
-                    f"💸 Despesas Totais: {format_brl(despesas)}\n"
-                    f"*{'💚 Saldo' if (receitas - despesas) >= 0 else '❤️ Saldo'}: {format_brl(receitas - despesas)}*\n"
-                )
-                df_receitas = df[df['tipo'] == 'receita']
-                if not df_receitas.empty:
-                    caption += "\n------ *Receitas* ------\n"
-                    for _, row in df_receitas.sort_values(by='total', ascending=False).iterrows():
-                        caption += f"💰 {row['categoria']}: {format_brl(row['total'])}\n"
-                df_despesas = df[df['tipo'] == 'despesa']
-                if not df_despesas.empty:
-                    caption += "\n------ *Despesas* ------\n"
-                    for _, row in df_despesas.sort_values(by='total', ascending=False).iterrows():
-                        caption += f"💸 {row['categoria']}: {format_brl(row['total'])}\n"
-                await context.bot.send_photo(chat_id=query.message.chat_id,
-                                             photo=buffer, caption=caption, parse_mode='Markdown')
+        await query.edit_message_text("⏳ Gerando relatório comparativo, um momento...")
         
+        ano_anterior, mes_anterior = get_previous_month(hoje.year, hoje.month)
+        df_atual = gerar_relatorio_mensal(hoje.month, hoje.year)
+        df_anterior = gerar_relatorio_mensal(mes_anterior, ano_anterior)
+        
+        if df_anterior.empty:
+            await query.edit_message_text(
+                "Ainda não há dados do mês anterior para comparar.",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("⬅️ Voltar", callback_data="relatorios")
+                ]]))
+            return
+            
+        buffer, caption = criar_relatorio_comparativo(
+            df_atual, df_anterior, hoje.month, hoje.year, mes_anterior, ano_anterior)
+        await context.bot.send_photo(chat_id=query.message.chat_id,
+                                     photo=buffer, caption=caption, parse_mode='Markdown')
         await query.delete_message()
         await show_main_menu(update, context)
 
     elif data == "orcamentos":
+        # ... (Mantém a lógica de orçamentos) ...
         keyboard = [
             [InlineKeyboardButton("🎯 Definir/Alterar", callback_data="orc_definir")],
             [InlineKeyboardButton("📋 Ver Orçamentos", callback_data="orc_ver")],
@@ -983,12 +1068,13 @@ async def generic_button_handler(update: Update, context: ContextTypes.DEFAULT_T
             parse_mode='Markdown')
 
     elif data == "confirmar_zerar":
+        # ... (Mantém a lógica de zerar dados) ...
         zerar_dados()
         await query.edit_message_text("✅ Todos os dados foram apagados com sucesso!")
         await show_main_menu(update, context, message_id=query.message.message_id)
 
     elif data == "orc_definir":
-        # Orçamentos só podem ser definidos para categorias PRINCIPAIS de despesa
+        # ... (Mantém a lógica de definir orçamento) ...
         categorias = get_categorias('despesa')
         keyboard = [[InlineKeyboardButton(f"{icone} {nome}", callback_data=f"orc_cat_{nome}")] 
                     for nome, icone in categorias if nome not in SUBCATEGORIAS_CARTAO] # Filtra subcategorias, se houver
@@ -998,6 +1084,7 @@ async def generic_button_handler(update: Update, context: ContextTypes.DEFAULT_T
             reply_markup=InlineKeyboardMarkup(keyboard))
 
     elif data.startswith("orc_cat_"):
+        # ... (Mantém a lógica de escolha de orçamento) ...
         context.user_data.clear()
         context.user_data['message_id_to_edit'] = query.message.message_id
         categoria = data[8:]
@@ -1008,6 +1095,7 @@ async def generic_button_handler(update: Update, context: ContextTypes.DEFAULT_T
             parse_mode='Markdown')
 
     elif data == "orc_ver":
+        # ... (Mantém a lógica de ver orçamentos) ...
         hoje = get_brazil_now()
         orcamentos = get_todos_orcamentos(hoje.month, hoje.year)
         if not orcamentos:
@@ -1021,7 +1109,6 @@ async def generic_button_handler(update: Update, context: ContextTypes.DEFAULT_T
         texto = f"📋 *Orçamentos de {meses[calendar.month_name[hoje.month]].capitalize()}*\n\n"
         keyboard = []
         for categoria, limite in orcamentos:
-            # get_orcamento_status AGORA AGREGA corretamente as subcategorias
             _, gasto, disponivel, percentual = get_orcamento_status(categoria, hoje.month, hoje.year)
             barra = "▪" * int(percentual / 10) + "▫" * (10 - int(percentual / 10))
             status = "✅" if disponivel >= 0 else "🆘"
@@ -1039,9 +1126,9 @@ async def generic_button_handler(update: Update, context: ContextTypes.DEFAULT_T
             parse_mode='Markdown')
 
     elif data.startswith("orc_gastos_"):
+        # ... (Mantém a lógica de ver gastos por orçamento) ...
         categoria = data[11:]
         hoje = get_brazil_now()
-        # get_transacoes_por_categoria AGORA BUSCA a principal e todas as subcategorias do cartão
         transacoes = get_transacoes_por_categoria(categoria, hoje.month, hoje.year) 
         texto = f"💸 *Gastos em {categoria}*\n\n"
         if not transacoes:
@@ -1060,6 +1147,7 @@ async def generic_button_handler(update: Update, context: ContextTypes.DEFAULT_T
 
     # Fluxo para voltar ao resumo da transação após cancelamento
     elif data.startswith("show_tx_"):
+        # ... (Mantém a lógica de show_tx) ...
         tx_id = int(data.split("_")[-1])
         await send_or_edit_summary(context, query.message.chat_id, tx_id, query.message.message_id)
         await query.answer(text="Edição cancelada.")
@@ -1067,6 +1155,7 @@ async def generic_button_handler(update: Update, context: ContextTypes.DEFAULT_T
 
     # Inicia o menu de edição da transação
     elif data.startswith("edit_tx_"):
+        # ... (Mantém a lógica de edição da transação) ...
         tx_id = int(data.split("_")[-1])
         tx = get_transacao(tx_id)
         if not tx:
@@ -1098,7 +1187,7 @@ async def generic_button_handler(update: Update, context: ContextTypes.DEFAULT_T
             [InlineKeyboardButton("🏷️ Mudar Categoria", callback_data=f"edit_campo_categoria_{_id}")],
             [InlineKeyboardButton("📝 Mudar Descrição", callback_data=f"edit_campo_descricao_{_id}")],
             [InlineKeyboardButton("❌ Cancelar Edição", callback_data=f"show_tx_{_id}")],
-            [InlineKeyboardButton("🗑️ Excluir Transação", callback_data=f"confirm_delete_{_id}")] # NOVO BOTÃO
+            [InlineKeyboardButton("🗑️ Excluir Transação", callback_data=f"confirm_delete_{_id}")]
         ])
 
         await query.edit_message_text(
@@ -1108,6 +1197,7 @@ async def generic_button_handler(update: Update, context: ContextTypes.DEFAULT_T
 
     # Confirmação de Exclusão (NOVO BLOCO)
     elif data.startswith("confirm_delete_"):
+        # ... (Mantém a lógica de confirmação de exclusão) ...
         tx_id = int(data.split("_")[-1])
         tx = get_transacao(tx_id)
         
@@ -1139,9 +1229,9 @@ async def generic_button_handler(update: Update, context: ContextTypes.DEFAULT_T
 
     # Execução da Exclusão (NOVO BLOCO)
     elif data.startswith("delete_tx_"):
+        # ... (Mantém a lógica de execução de exclusão) ...
         tx_id = int(data.split("_")[-1])
         
-        # Exclui do banco de dados
         result = delete_transacao(tx_id)
         
         if result is not None and result > 0:
@@ -1161,6 +1251,7 @@ async def generic_button_handler(update: Update, context: ContextTypes.DEFAULT_T
             )
 
     elif data.startswith("edit_campo_"):
+        # ... (Mantém a lógica de edição de campo) ...
         partes = data.split('_')
         campo = partes[2]
         tx_id = int(partes[3])
@@ -1170,7 +1261,6 @@ async def generic_button_handler(update: Update, context: ContextTypes.DEFAULT_T
         context.user_data['edit_tx_id'] = tx_id
         context.user_data['message_id_to_edit'] = message_id_to_edit
         
-        # O botão Cancelar volta para o menu de edição da transação (edit_tx_ID)
         cancel_keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancelar", callback_data=f"edit_tx_{tx_id}")]])
 
         if campo == 'valor':
@@ -1196,13 +1286,11 @@ async def generic_button_handler(update: Update, context: ContextTypes.DEFAULT_T
             keyboard = [[InlineKeyboardButton(f"{icone} {nome}", callback_data=f"edit_cat_select_{nome}")] 
                         for nome, icone in categorias]
             
-            # Adicionar as subcategorias de cartão como opções se o original for um cartão principal
             if _cat in CARTOES_ESPECIAIS or any(c in _cat for c in CARTOES_ESPECIAIS):
                 for principal in CARTOES_ESPECIAIS:
                     if principal in _cat:
                         for sub in SUBCATEGORIAS_CARTAO:
                              categoria_completa = f"{principal} - {sub}"
-                             # Adiciona a subcategoria completa como opção de mudança
                              keyboard.append([InlineKeyboardButton(f"💳 {categoria_completa}", 
                                                                    callback_data=f"edit_cat_select_{categoria_completa}")])
                         break
@@ -1214,14 +1302,13 @@ async def generic_button_handler(update: Update, context: ContextTypes.DEFAULT_T
                 reply_markup=InlineKeyboardMarkup(keyboard),
                 parse_mode='Markdown')
 
-
     elif data.startswith("edit_cat_select_"):
+        # ... (Mantém a lógica de seleção de nova categoria) ...
         categoria = data[len("edit_cat_select_"):]
         tx_id = context.user_data.get('edit_tx_id')
         message_id_to_edit = context.user_data.get('message_id_to_edit')
         
         if tx_id and context.user_data.get('step') == 'editar_categoria_transacao':
-            # Nota: A alteração de categoria aqui permite salvar subcategorias.
             sucesso = update_transacao_campo(tx_id, 'categoria', categoria)
             
             if sucesso:
@@ -1241,6 +1328,59 @@ async def generic_button_handler(update: Update, context: ContextTypes.DEFAULT_T
                                              InlineKeyboardButton("🏠 Menu Principal", callback_data="menu_principal")
                                          ]]))
 
+# Função auxiliar para gerar relatório (usada pela nova lógica)
+async def relatorio_gerar_simples(update: Update, context: ContextTypes.DEFAULT_TYPE, mes, ano, tipo_relatorio):
+    query = update.callback_query
+    
+    detalhado = (tipo_relatorio == 'detalhado')
+    nome_mes_relatorio = f"{meses[calendar.month_name[mes]].capitalize()}/{ano}"
+
+    df = gerar_relatorio_mensal(mes, ano, detalhado=detalhado)
+    
+    if df.empty:
+        await query.edit_message_text(
+            f"Nenhum dado encontrado para {nome_mes_relatorio}.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("⬅️ Voltar aos Relatórios", callback_data="relatorios")
+            ]]))
+        return
+        
+    if detalhado:
+        # Detalhado: Usa categorias como estão no BD (inclui subcategorias)
+        buffer = criar_relatorio_detalhado(df, mes, ano)
+        await context.bot.send_document(
+            chat_id=query.message.chat_id,
+            document=buffer,
+            filename=f"relatorio_{ano}_{mes:02d}_detalhado.txt",
+            caption=f"Aqui está seu relatório detalhado de {nome_mes_relatorio}!")
+    else:
+        # Gráfico: Usa categorias agregadas (cartão principal)
+        buffer = criar_relatorio_visual(df, mes, ano)
+        receitas = df[df['tipo'] == 'receita']['total'].sum()
+        despesas = df[df['tipo'] == 'despesa']['total'].sum()
+        caption = (
+            f"📊 *Resumo de {nome_mes_relatorio}*\n\n"
+            f"💰 Receitas Totais: {format_brl(receitas)}\n"
+            f"💸 Despesas Totais: {format_brl(despesas)}\n"
+            f"*{'💚 Saldo' if (receitas - despesas) >= 0 else '❤️ Saldo'}: {format_brl(receitas - despesas)}*\n"
+        )
+        df_receitas = df[df['tipo'] == 'receita']
+        if not df_receitas.empty:
+            caption += "\n------ *Receitas* ------\n"
+            for _, row in df_receitas.sort_values(by='total', ascending=False).iterrows():
+                caption += f"💰 {row['categoria']}: {format_brl(row['total'])}\n"
+        df_despesas = df[df['tipo'] == 'despesa']
+        if not df_despesas.empty:
+            caption += "\n------ *Despesas* ------\n"
+            for _, row in df_despesas.sort_values(by='total', ascending=False).iterrows():
+                caption += f"💸 {row['categoria']}: {format_brl(row['total'])}\n"
+                
+        await context.bot.send_photo(chat_id=query.message.chat_id,
+                                     photo=buffer, caption=caption, parse_mode='Markdown')
+
+    await query.delete_message()
+    await show_main_menu(update, context)
+
 
 async def data_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -1248,11 +1388,13 @@ async def data_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     data = query.data
 
     if data == "data_manual":
+        # ... (Mantém a lógica de data manual) ...
         context.user_data['step'] = 'data_manual_transacao'
         await query.edit_message_text("Por favor, digite a data no formato **dd/mm/aaaa**:")
         return
 
     if data.startswith("data_"):
+        # ... (Mantém a lógica de data) ...
         date_str = data[5:]
         context.user_data['data_transacao'] = date_str
         context.user_data['data_insercao'] = get_brazil_now().strftime('%Y-%m-%d')
@@ -1300,6 +1442,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pass
 
     if step == 'valor_transacao':
+        # ... (Mantém a lógica de valor da transação) ...
         try:
             valor = float(text.replace('.', '').replace(',', '.'))
             context.user_data['valor_transacao'] = valor
@@ -1343,6 +1486,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if step == 'descricao_transacao':
+        # ... (Mantém a lógica de descrição da transação) ...
         required_keys = ['tipo_transacao', 'categoria_transacao', 'valor_transacao', 'data_transacao']
         if not all(key in context.user_data for key in required_keys):
             logging.error(f"Estado inválido em 'descricao_transacao'. Dados: {context.user_data}")
@@ -1367,12 +1511,10 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                               descricao,
                               context.user_data['data_transacao'])
 
-        # Nova transação: is_edited=False
         sent_message_id = await send_or_edit_summary(context, chat_id, tx_id)
 
         if context.user_data['tipo_transacao'] == 'despesa':
             data_obj = datetime.strptime(context.user_data['data_transacao'], '%Y-%m-%d')
-            # Pega apenas a categoria principal para verificar o orçamento
             categoria_principal = context.user_data['categoria_transacao'].split(' - ')[0]
             _, _, _, percentual = get_orcamento_status(
                 categoria_principal, data_obj.month, data_obj.year)
@@ -1385,6 +1527,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if step == 'valor_orcamento':
+        # ... (Mantém a lógica de valor do orçamento) ...
         try:
             valor = float(text.replace('.', '').replace(',', '.'))
             categoria = context.user_data['categoria_orcamento']
@@ -1407,6 +1550,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if step == 'data_manual_transacao':
+        # ... (Mantém a lógica de data manual) ...
         try:
             data_obj = datetime.strptime(text, '%d/%m/%Y')
             context.user_data['data_transacao'] = data_obj.strftime('%Y-%m-%d')
@@ -1427,6 +1571,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if step == 'editar_valor_transacao':
+        # ... (Mantém a lógica de edição de valor) ...
         try:
             novo_valor = float(text.replace('.', '').replace(',', '.'))
             tx_id = context.user_data.get('edit_tx_id')
@@ -1436,7 +1581,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not sucesso:
                 raise ValueError("Falha ao atualizar")
 
-            # Edição concluída: is_edited=True
             await send_or_edit_summary(context, chat_id, tx_id, message_id_to_edit, is_edited=True)
             
             await context.bot.send_message(
@@ -1455,6 +1599,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if step == 'editar_descricao_transacao':
+        # ... (Mantém a lógica de edição de descrição) ...
         descricao = text
         tx_id = context.user_data.get('edit_tx_id')
         message_id_to_edit = context.user_data.get('message_id_to_edit')
@@ -1462,7 +1607,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         sucesso = update_transacao_campo(tx_id, 'descricao', descricao)
         
         if sucesso:
-            # Edição concluída: is_edited=True
             await send_or_edit_summary(context, chat_id, tx_id, message_id_to_edit, is_edited=True)
             
             await context.bot.send_message(
@@ -1509,12 +1653,14 @@ def run_bot():
 
     application.add_handler(
         CallbackQueryHandler(data_button_handler, pattern="^(data_manual|data_).+"))
+    # Altera o CallbackQueryHandler para lidar com a nova estrutura de relatórios
     application.add_handler(
         CallbackQueryHandler(generic_button_handler, pattern="^(?!data_manual|data_).+"))
+
     application.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
 
-    print("🤖 Bot assistente financeiro v13.9 (Exclusão e Edição de Mensagem Corrigidos) iniciado!")
+    print("🤖 Bot assistente financeiro v14.0 (Relatórios de Mês Anterior) iniciado!")
     application.run_polling()
 
 
@@ -1548,7 +1694,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
-
-
-
