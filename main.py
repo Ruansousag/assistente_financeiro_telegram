@@ -27,12 +27,13 @@ logging.basicConfig(
 
 # --- SUBCATEGORIAS E CARTÕES ESPECIAIS ---
 SUBCATEGORIAS_CARTAO = [
-    "LANCHES 🍟",
-    "GASOLINA 🚗",
-    "STREAMING 📺",
-    "PASSAGEM 🚍",
-    "LAZER 🎉",
     "MERCADO 🛒",
+    "GASOLINA 🚗",
+    "PASSAGEM 🚍",
+    "LANCHES 🍟",
+    "UBER 🚘",
+    "LAZER 🎉",
+    "STREAMING 📺",
     "PLANO CELULARES 📱"
 ]
 
@@ -1547,6 +1548,7 @@ def main():
 
 if __name__ == '__main__':
     main()
+
 
 
 
