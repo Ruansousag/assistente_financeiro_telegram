@@ -173,7 +173,7 @@ def setup_database():
             ('Cartão CAIXA', 'despesa', '💳'),
             ('Cartão CVC', 'despesa', '💳'),
             ('Educação', 'despesa', '📚'),
-            ('Diversos', 'ambos', '📦'),
+            ('Internet', 'despesa', '📦'),
         ]
         
         for categoria in categorias_default:
@@ -1544,4 +1544,5 @@ def main():
 
 if __name__ == '__main__':
     main()
+
 
